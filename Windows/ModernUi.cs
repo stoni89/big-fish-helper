@@ -15,17 +15,20 @@ namespace BigFishHelper.Windows;
 /// </summary>
 public static class ModernUi
 {
-    public static readonly Vector4 CardBg = new(0.12f, 0.14f, 0.20f, 0.92f);
+    public static readonly Vector4 CardBg = new(0.13f, 0.21f, 0.33f, 0.92f);
     public static readonly Vector4 CardBorder = new(1f, 1f, 1f, 0.06f);
-    // Helles Blau als Plugin-Farbe (Big Fish Helper).
-    public static readonly Vector4 Accent = new(0.36f, 0.72f, 1f, 1f);
-    public static readonly Vector4 AccentHover = new(0.50f, 0.80f, 1f, 1f);
-    public static readonly Vector4 TextMuted = new(0.58f, 0.61f, 0.70f, 1f);
-    public static readonly Vector4 ToggleOff = new(0.24f, 0.26f, 0.34f, 1f);
-    public static readonly Vector4 ToggleOffHover = new(0.30f, 0.32f, 0.41f, 1f);
+    // Helles Blau als Plugin-Farbe (Big Fish Helper) - auch die Hintergründe sind blau statt grau-schwarz.
+    public static readonly Vector4 Accent = new(0.55f, 0.83f, 1f, 1f);
+    public static readonly Vector4 AccentHover = new(0.68f, 0.89f, 1f, 1f);
+    public static readonly Vector4 TextMuted = new(0.64f, 0.73f, 0.84f, 1f);
+    public static readonly Vector4 ToggleOff = new(0.24f, 0.33f, 0.46f, 1f);
+    public static readonly Vector4 ToggleOffHover = new(0.30f, 0.40f, 0.54f, 1f);
     public static readonly Vector4 SidebarHover = new(1f, 1f, 1f, 0.06f);
-    public static readonly Vector4 SidebarSelected = new(0.36f, 0.72f, 1f, 0.16f);
-    public static readonly Vector4 WindowBg = new(0.055f, 0.063f, 0.098f, 1f);
+    public static readonly Vector4 SidebarSelected = new(0.55f, 0.83f, 1f, 0.18f);
+    public static readonly Vector4 WindowBg = new(0.08f, 0.13f, 0.21f, 1f);
+
+    // Text/Icons auf Flächen in der (hellen) Akzentfarbe - dunkel statt weiß, sonst kaum lesbar.
+    public static readonly Vector4 TextOnAccent = new(0.05f, 0.09f, 0.16f, 1f);
 
     // Card-Innenabstand links (per ImGui.Indent in BeginCard) UND rechts - rechts gibt es dafür
     // keine ImGui-Bordfunktion, daher müssen alle rechtsbündigen Helfer hier (LabelRow, ToggleRow,
@@ -60,16 +63,16 @@ public static class ModernUi
         ImGui.PushStyleColor(ImGuiCol.WindowBg, WindowBg);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0f, 0f, 0f, 0f));
         ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.93f, 0.94f, 0.97f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0.16f, 0.18f, 0.25f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.20f, 0.22f, 0.30f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(0.22f, 0.25f, 0.33f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.20f, 0.22f, 0.30f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.26f, 0.29f, 0.38f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.30f, 0.33f, 0.43f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBg, new Vector4(0.17f, 0.26f, 0.39f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgHovered, new Vector4(0.21f, 0.31f, 0.45f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.FrameBgActive, new Vector4(0.24f, 0.35f, 0.50f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.20f, 0.30f, 0.44f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.26f, 0.37f, 0.52f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.30f, 0.42f, 0.58f, 1f));
         ImGui.PushStyleColor(ImGuiCol.SliderGrab, Accent);
         ImGui.PushStyleColor(ImGuiCol.SliderGrabActive, AccentHover);
         ImGui.PushStyleColor(ImGuiCol.CheckMark, Accent);
-        ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(0.10f, 0.12f, 0.17f, 0.98f));
+        ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(0.10f, 0.16f, 0.25f, 0.98f));
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1f, 1f, 1f, 0.05f));
         ImGui.PushStyleColor(ImGuiCol.Separator, new Vector4(1f, 1f, 1f, 0.08f));
     }
@@ -120,7 +123,7 @@ public static class ModernUi
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, AccentHover);
         // Icon selbst gedämpfter grau statt des globalen (fast weißen) Text-Standards, solange
         // nicht ausgewählt - im ausgewählten Zustand bleibt es dagegen kräftig weiß.
-        ImGui.PushStyleColor(ImGuiCol.Text, selected ? Vector4.One : TextMuted);
+        ImGui.PushStyleColor(ImGuiCol.Text, selected ? TextOnAccent : TextMuted);
 
         bool clicked;
         var railFontHandle = GetRailIconFontHandle();
