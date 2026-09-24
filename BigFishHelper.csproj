@@ -1,0 +1,16 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+  <PropertyGroup>
+    <Version>0.1.0.0</Version>
+    <!-- Manifest-Felder (siehe https://github.com/goatcorp/DalamudPackager) -->
+    <Author>Stoni</Author>
+    <Name>Big Fish Helper</Name>
+    <Punchline>Helper for catching Big Fish</Punchline>
+    <Description>Helps you catch Big Fish, working together with AutoHook.</Description>
+    <RepoUrl>https://github.com/stoni89/big-fish-helper</RepoUrl>
+    <Tags>fishing;bigfish;utility;bigfishhelper</Tags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="Data\icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
