@@ -18,6 +18,9 @@ public class Configuration : IPluginConfiguration
     // Pro Big Fish (Item-Id) die eingetragene Zeit in Minuten (0 = aus) - siehe Timer-Seite.
     public Dictionary<uint, int> FishAlertMinutes { get; set; } = new();
 
+    // Pro Big Fish (Item-Id) die per "Position speichern"-Knopf (nur Dev-Version) gespeicherte Angel-Position.
+    public Dictionary<uint, SavedFishingPosition> SavedFishingPositions { get; set; } = new();
+
     // Pro Big Fish (Item-Id) das zugeordnete AutoHook-Preset (Name) - siehe Timer-Seite.
     public Dictionary<uint, string> FishAutoHookPresets { get; set; } = new();
 
