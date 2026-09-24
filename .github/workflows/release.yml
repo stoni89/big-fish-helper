@@ -1,0 +1,116 @@
+name: Release
+
+# Baut das Plugin bei jedem Push auf main neu, veröffentlicht ein GitHub Release mit dem
+# gepackten Plugin-Zip als Asset und trägt die neue Version in das zentrale Plugin-Repository
+# (stoni89/DalamudPlugins/repo.json) ein, damit Dalamud automatisch ein Update anzeigt.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    env:
+      PLUGIN_REPO_TOKEN: ${{ secrets.PLUGIN_REPO_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Download Dalamud
+        run: |
+          Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile dalamud-latest.zip
+          Expand-Archive -Path dalamud-latest.zip -DestinationPath dalamud
+        shell: pwsh
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release
+        shell: pwsh
+        env:
+          DALAMUD_HOME: ${{ github.workspace }}\dalamud
+
+      - name: Read plugin version
+        id: version
+        run: |
+          $xml = [xml](Get-Content BigFishHelper.csproj)
+          $version = ($xml.Project.PropertyGroup.Version | Select-Object -First 1)
+          Write-Host "Plugin version: $version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Create/update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          files: bin/Release/BigFishHelper/latest.zip
+          generate_release_notes: true
+
+      - name: Build plugin entry
+        run: |
+          $manifest = Get-Content bin/Release/BigFishHelper/BigFishHelper.json | ConvertFrom-Json
+
+          $repoEntry = [ordered]@{
+            Author              = $manifest.Author
+            Name                = $manifest.Name
+            InternalName        = $manifest.InternalName
+            AssemblyVersion     = $manifest.AssemblyVersion
+            Description         = $manifest.Description
+            Punchline           = $manifest.Punchline
+            ApplicableVersion   = $manifest.ApplicableVersion
+            Tags                = $manifest.Tags
+            DalamudApiLevel     = $manifest.DalamudApiLevel
+            RepoUrl             = "https://github.com/stoni89/big-fish-helper"
+            DownloadLinkInstall = "https://github.com/stoni89/big-fish-helper/releases/latest/download/latest.zip"
+            DownloadLinkUpdate  = "https://github.com/stoni89/big-fish-helper/releases/latest/download/latest.zip"
+            DownloadLinkTesting = "https://github.com/stoni89/big-fish-helper/releases/latest/download/latest.zip"
+          }
+
+          $repoEntry | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 plugin-entry.json
+        shell: pwsh
+
+      # Zentrales Plugin-Repository (eine URL fuer alle Plugins): nur den EIGENEN Eintrag (per
+      # InternalName) ersetzen/ergaenzen, die Eintraege der anderen Plugins bleiben unveraendert.
+      # Braucht das Secret PLUGIN_REPO_TOKEN (Fine-grained PAT mit "Contents: Read and write" auf
+      # stoni89/DalamudPlugins) - fehlt es, wird dieser Schritt nur uebersprungen.
+      - name: Update central plugin repository
+        if: ${{ env.PLUGIN_REPO_TOKEN != '' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $central = Join-Path $env:RUNNER_TEMP "central"
+          git clone "https://x-access-token:$($env:PLUGIN_REPO_TOKEN)@github.com/stoni89/DalamudPlugins.git" $central
+          $entry = Get-Content plugin-entry.json -Raw | ConvertFrom-Json
+
+          $existing = @()
+          if (Test-Path "$central/repo.json") {
+            # Klammern + ForEach: packt das JSON-Array in jeder PowerShell-Version sicher in Einzel-Eintraege aus.
+            $existing = @((Get-Content "$central/repo.json" -Raw | ConvertFrom-Json) | ForEach-Object { $_ })
+          }
+
+          $merged = @($existing | Where-Object { $_.InternalName -ne $entry.InternalName }) + $entry
+          $merged = @($merged | Sort-Object Name)
+          ConvertTo-Json -InputObject $merged -Depth 5 | Set-Content -Encoding utf8 "$central/repo.json"
+
+          Push-Location $central
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo.json
+          if (git status --porcelain) {
+            git commit -m "Update $($entry.InternalName) to v$($env:VERSION)"
+            git push
+          } else {
+            Write-Host "Central repo.json unchanged, nothing to commit."
+          }
+          Pop-Location
+        shell: pwsh
