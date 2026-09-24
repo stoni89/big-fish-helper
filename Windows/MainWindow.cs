@@ -432,12 +432,13 @@ public class MainWindow : Window
         var planned = automation.GetPlannedFish(now);
         ModernUi.GroupLabel(Loc.T("Geplante Fische", "Planned fish"));
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX;
-        if (ImGui.BeginTable("##PlannedFish", 3, tableFlags))
+        if (ImGui.BeginTable("##PlannedFish", 4, tableFlags))
         {
             ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
             ImGui.TableSetupColumn("##Start", ImGuiTableColumnFlags.WidthFixed, 170f);
+            ImGui.TableSetupColumn("##Position", ImGuiTableColumnFlags.WidthFixed, 150f);
             ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 220f);
-            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("START", "START")), (2, Loc.T("HINWEIS", "NOTE")) }, lastColumn: 2);
+            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("START", "START")), (2, Loc.T("POSITION", "POSITION")), (3, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 3);
 
             foreach (var (fish, window, trigger) in planned)
             {
@@ -453,6 +454,22 @@ public class MainWindow : Window
                 else
                     ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(trigger - now)}", $"in {FormatCountdown(trigger - now)}"));
 
+                // Woher die Angel-Position kommt (bzw. dass sie vor Ort gesucht wird).
+                ImGui.TableNextColumn();
+                ImGui.AlignTextToFramePadding();
+                switch (FishingPositionStore.Get(config, fish.ItemId)?.Source)
+                {
+                    case FishingPositionSource.Saved:
+                        ImGui.TextColored(CaughtColor, Loc.T("Gespeichert", "Saved"));
+                        break;
+                    case FishingPositionSource.Builtin:
+                        ImGui.TextColored(CaughtColor, Loc.T("Hinterlegt", "Built-in"));
+                        break;
+                    default:
+                        ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
+                        break;
+                }
+
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
                 var preset = config.FishAutoHookPresets.GetValueOrDefault(fish.ItemId);
@@ -462,8 +479,8 @@ public class MainWindow : Window
                     ImGui.TextColored(ModernUi.TextMuted, preset);
             }
 
-            // Angehakt, aber (noch) keine Angel-Position hinterlegt - diese überspringt die Automation.
-            foreach (var fish in enabled.Where(f => !BigFishData.FishingPositions.ContainsKey(f.ItemId)))
+            // Angehakt, aber ohne eingetragene Angel-Position - wird übersprungen.
+            foreach (var fish in enabled.Where(f => !automation.CanReach(f) && !FishCatchState.IsCaught(f.ItemId)))
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
@@ -472,7 +489,8 @@ public class MainWindow : Window
                 ImGui.TableNextColumn();
                 ImGui.TextColored(ModernUi.TextMuted, "-");
                 ImGui.TableNextColumn();
-                ImGui.TextColored(NotCaughtColor, Loc.T("Keine Angel-Position", "No fishing position"));
+                ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
+                ImGui.TableNextColumn();
             }
 
             ImGui.EndTable();
@@ -542,7 +560,11 @@ public class MainWindow : Window
 
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX;
         var presetNames = AutoHookPresets.GetNames();
-        if (!ImGui.BeginTable("##BigFishTimers", 7, tableFlags))
+
+        // "Position speichern" nur in der Dev-Version (als Dev-Plugin geladen) - zum Erfassen der
+        // Angel-Positionen, die danach fest in BigFishData übernommen werden.
+        var isDev = Plugin.PluginInterface.IsDev;
+        if (!ImGui.BeginTable("##BigFishTimers", isDev ? 9 : 8, tableFlags))
             return;
 
         ImGui.TableSetupColumn("##Enabled", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
@@ -552,7 +574,10 @@ public class MainWindow : Window
         ImGui.TableSetupColumn("##Duration", ImGuiTableColumnFlags.WidthFixed, 80f);
         ImGui.TableSetupColumn("##PrepTimer", ImGuiTableColumnFlags.WidthFixed, 150f);
         ImGui.TableSetupColumn("##AutoHookPreset", ImGuiTableColumnFlags.WidthFixed, 210f);
-        DrawTableHeader(new[] { (2, Loc.T("FISCH", "FISH")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") }, lastColumn: 6);
+        ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
+        if (isDev)
+            ImGui.TableSetupColumn("##SavePosition", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
+        DrawTableHeader(new[] { (2, Loc.T("FISCH", "FISH")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") }, lastColumn: isDev ? 8 : 7);
 
         foreach (var (fish, caught, window) in rows)
         {
@@ -636,9 +661,119 @@ public class MainWindow : Window
             // AutoHook-Preset: alle aktuell in AutoHook angelegten Presets zur Auswahl.
             ImGui.TableNextColumn();
             DrawAutoHookPresetCombo(config, fish.ItemId, presetNames);
+
+            ImGui.TableNextColumn();
+            DrawFlyToFishButton(fish);
+
+            if (isDev)
+            {
+                ImGui.TableNextColumn();
+                DrawSavePositionButton(config, fish);
+            }
         }
 
         ImGui.EndTable();
+    }
+
+    /// <summary>
+    /// "Fliege zum Fisch" pro Fisch: fliegt sofort zur eingetragenen Angel-Position (Teleport, falls
+    /// nötig), landet und dreht sich zum Wasser - ohne zu angeln. Solange das für diesen Fisch läuft,
+    /// wird der Knopf zum Stop-Knopf.
+    /// </summary>
+    private void DrawFlyToFishButton(BigFish fish)
+    {
+        var automation = plugin.Automation;
+        var testingThis = automation.TestTarget?.ItemId == fish.ItemId;
+        var mainRunning = automation.IsRunning && automation.TestTarget == null;
+        var disabled = !testingThis && (mainRunning || HasMissingRequiredDependency() || !automation.CanReach(fish));
+        var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
+
+        ImGui.PushStyleColor(ImGuiCol.Button, testingThis ? new Vector4(0.85f, 0.3f, 0.35f, 0.8f) : new Vector4(0f, 0f, 0f, 0f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, testingThis ? new Vector4(0.92f, 0.38f, 0.42f, 1f) : new Vector4(ModernUi.Accent.X, ModernUi.Accent.Y, ModernUi.Accent.Z, 0.35f));
+        ImGui.PushStyleColor(ImGuiCol.Text, testingThis ? Vector4.One : ModernUi.Accent);
+        if (disabled)
+            ImGui.BeginDisabled();
+        var clicked = IconTextButton($"flytofish_{fish.ItemId}", testingThis ? FontAwesomeIcon.Stop : FontAwesomeIcon.PaperPlane, string.Empty, buttonSize);
+        if (disabled)
+            ImGui.EndDisabled();
+        ImGui.PopStyleColor(3);
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            ImGui.SetTooltip(testingThis
+                ? Loc.T($"Anhalten\n{automation.StatusText}", $"Stop\n{automation.StatusText}")
+                : mainRunning
+                    ? Loc.T("Nicht möglich, solange die Automation läuft.", "Not possible while the automation is running.")
+                    : HasMissingRequiredDependency()
+                        ? Loc.T("Ein benötigtes Plugin fehlt (siehe Plugins).", "A required plugin is missing (see Plugins).")
+                        : !automation.CanReach(fish)
+                            ? Loc.T("Keine Angel-Position eingetragen.", "No fishing position set.")
+                            : Loc.T("Fliege zum Fisch (zur Angel-Position, ohne zu angeln)", "Fly to fish (to the fishing position, without fishing)"));
+        }
+
+        if (!clicked)
+            return;
+
+        if (testingThis)
+            automation.Stop();
+        else
+            automation.StartTest(fish);
+    }
+
+    /// <summary>
+    /// Nur Dev-Version: speichert die aktuelle Position + Blickrichtung als Angel-Position dieses
+    /// Fischs (nur in dessen Zone möglich) und kopiert die passenden Code-Zeilen für BigFishData in die
+    /// Zwischenablage. Umschalt+Klick entfernt eine gespeicherte Position wieder.
+    /// </summary>
+    private static void DrawSavePositionButton(Configuration config, BigFish fish)
+    {
+        var player = Plugin.ObjectTable.LocalPlayer;
+        var inZone = player != null && Plugin.ClientState.TerritoryType == fish.TerritoryId;
+        var hasSaved = config.SavedFishingPositions.TryGetValue(fish.ItemId, out var saved);
+        var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
+
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0f, 0f, 0f, 0f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(ModernUi.Accent.X, ModernUi.Accent.Y, ModernUi.Accent.Z, 0.35f));
+        ImGui.PushStyleColor(ImGuiCol.Text, hasSaved ? CaughtColor : ModernUi.TextMuted);
+        if (!inZone && !hasSaved)
+            ImGui.BeginDisabled();
+        var clicked = IconTextButton($"savepos_{fish.ItemId}", FontAwesomeIcon.MapMarkerAlt, string.Empty, buttonSize);
+        if (!inZone && !hasSaved)
+            ImGui.EndDisabled();
+        ImGui.PopStyleColor(3);
+
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+        {
+            var info = hasSaved
+                ? Loc.T($"Gespeichert: {saved!.X:F2}, {saved.Y:F2}, {saved.Z:F2}\nUmschalt+Klick: entfernen", $"Saved: {saved!.X:F2}, {saved.Y:F2}, {saved.Z:F2}\nShift+click: remove")
+                : string.Empty;
+            var action = inZone
+                ? Loc.T("Klick: aktuelle Position + Blickrichtung speichern (Code wird kopiert)", "Click: save current position + facing (code is copied)")
+                : Loc.T("Nur in der Zone des Fischs speicherbar", "Can only be saved in the fish's zone");
+            ImGui.SetTooltip(string.IsNullOrEmpty(info) ? action : $"{action}\n{info}");
+        }
+
+        if (!clicked)
+            return;
+
+        if (ImGui.GetIO().KeyShift && hasSaved)
+        {
+            config.SavedFishingPositions.Remove(fish.ItemId);
+            config.Save();
+            return;
+        }
+
+        if (!inZone || player == null)
+            return;
+
+        var position = player.Position;
+        var facing = player.Rotation;
+        config.SavedFishingPositions[fish.ItemId] = SavedFishingPosition.From(position, facing);
+        config.Save();
+
+        var name = FishingAutomation.FishName(fish);
+        ImGui.SetClipboardText(FishingPositionStore.ToCodeLines(fish.ItemId, name, position, facing));
+        Plugin.Log.Info($"[DevTools] Angel-Position für {name} gespeichert: {position}, Blickrichtung {facing:F3} (Code kopiert).");
     }
 
     private static void DrawAutoHookPresetCombo(Configuration config, uint itemId, IReadOnlyList<string> presetNames)
@@ -913,6 +1048,10 @@ public class MainWindow : Window
         ("vnavmesh", "vnavmesh",
             "Fliegt die Automation zur Angel-Position des Fischs.",
             "Flies the automation to the fish's fishing position.",
+            true),
+        ("Lifestream", "Lifestream",
+            "Teleportiert zum nächsten Ätheriten, wenn der Fisch in einer anderen Zone ist.",
+            "Teleports to the nearest aetheryte when the fish is in another zone.",
             true),
     };
 
