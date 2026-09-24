@@ -15,10 +15,16 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
 
     private const string CommandName = "/bigfish";
 
     public Configuration Configuration { get; }
+
+    // Ablauf der Play-Seite (Teleport, Hinfliegen, Fischer, AutoHook) - startet immer gestoppt.
+    public FishingAutomation Automation { get; }
 
     public readonly WindowSystem WindowSystem = new("BigFishHelper");
 
@@ -28,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
+        Automation = new FishingAutomation(this);
         MainWindow = new MainWindow(this);
         WindowSystem.AddWindow(MainWindow);
 
@@ -55,6 +62,7 @@ public sealed class Plugin : IDalamudPlugin
 
         WindowSystem.RemoveAllWindows();
         MainWindow.Dispose();
+        Automation.Dispose();
         CommandManager.RemoveHandler(CommandName);
     }
 }
