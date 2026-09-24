@@ -24,6 +24,7 @@ public sealed class FishingAutomation : IDisposable
         Mounting,
         Flying,
         Landing,
+        ExactPositioning,
         SwitchingJob,
         StartingAutoHook,
         Fishing,
@@ -41,7 +42,12 @@ public sealed class FishingAutomation : IDisposable
     private static readonly TimeSpan JobSwitchTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FaceSettleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan RestartInterval = TimeSpan.FromSeconds(10);
-    private const float ArrivalTolerance = 0.5f;
+    // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
+    // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
+    private const float ArrivalTolerance = 0.1f;
+    private const float ExactPositionTolerance = 0.1f;
+    private const float ExactPathTolerance = 0.05f;
+    private static readonly TimeSpan ExactPositioningTimeout = TimeSpan.FromSeconds(10);
     private const float ArrivedDistance = 2f;
     private const int MaxPathAttempts = 3;
 
@@ -51,8 +57,13 @@ public sealed class FishingAutomation : IDisposable
     private readonly ICallGateSubscriber<bool> pathIsRunning;
     private readonly ICallGateSubscriber<bool> pathfindInProgress;
     private readonly ICallGateSubscriber<object> pathStop;
+    private readonly ICallGateSubscriber<List<Vector3>, bool, object> moveToPath;
+    private readonly ICallGateSubscriber<float> pathGetTolerance;
+    private readonly ICallGateSubscriber<float, object> pathSetTolerance;
+    private float? savedPathTolerance;
     private readonly ICallGateSubscriber<bool, object> autoHookSetPluginState;
     private readonly ICallGateSubscriber<string, object> autoHookSetPreset;
+    private readonly ICallGateSubscriber<uint, byte, bool> lifestreamTeleport;
 
     private State state = State.Waiting;
     private DateTime stateEnteredAt = DateTime.UtcNow;
@@ -63,6 +74,11 @@ public sealed class FishingAutomation : IDisposable
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
+
+    // Ziel des aktuellen Laufwegs (eingetragene Angel-Position) + Blickrichtung dort.
+    private Vector3 destination;
+    private float? destinationFacing;
+
 
     public bool IsRunning { get; private set; }
 
@@ -77,8 +93,12 @@ public sealed class FishingAutomation : IDisposable
         pathIsRunning = pi.GetIpcSubscriber<bool>("vnavmesh.Path.IsRunning");
         pathfindInProgress = pi.GetIpcSubscriber<bool>("vnavmesh.SimpleMove.PathfindInProgress");
         pathStop = pi.GetIpcSubscriber<object>("vnavmesh.Path.Stop");
+        moveToPath = pi.GetIpcSubscriber<List<Vector3>, bool, object>("vnavmesh.Path.MoveTo");
+        pathGetTolerance = pi.GetIpcSubscriber<float>("vnavmesh.Path.GetTolerance");
+        pathSetTolerance = pi.GetIpcSubscriber<float, object>("vnavmesh.Path.SetTolerance");
         autoHookSetPluginState = pi.GetIpcSubscriber<bool, object>("AutoHook.SetPluginState");
         autoHookSetPreset = pi.GetIpcSubscriber<string, object>("AutoHook.SetPreset");
+        lifestreamTeleport = pi.GetIpcSubscriber<uint, byte, bool>("Lifestream.Teleport");
 
         Plugin.Framework.Update += OnUpdate;
     }
@@ -104,12 +124,40 @@ public sealed class FishingAutomation : IDisposable
         Plugin.Log.Info("[FishingAutomation] Gestartet.");
     }
 
+    /// <summary>Welcher Fisch gerade per "Fliege zum Fisch"-Knopf angeflogen wird (null = keiner).</summary>
+    public BigFish? TestTarget => IsTest ? target : null;
+
+    // "Fliege zum Fisch": nur zur Angel-Position fliegen, landen, zum Wasser drehen - ohne
+    // Wartezeit, Fenster-Prüfung und ohne AutoHook.
+    private bool IsTest { get; set; }
+
+    /// <summary>"Fliege zum Fisch": sofort zur Angel-Position dieses Fischs fliegen (Teleport, falls nötig), dann stoppen.</summary>
+    public void StartTest(BigFish fish)
+    {
+        if (IsRunning)
+            Stop();
+
+        IsRunning = true;
+        IsTest = true;
+        target = fish;
+        targetWindow = new FishWindow(DateTime.UtcNow, DateTime.MaxValue);
+        pathAttempts = 0;
+        StatusText = Loc.T($"Fliege zu {FishName(fish)}...", $"Flying to {FishName(fish)}...");
+        Plugin.Log.Info($"[FishingAutomation] Fliege zum Fisch: {FishName(fish)}.");
+
+        if (Plugin.ClientState.TerritoryType != fish.TerritoryId)
+            SetState(State.Teleporting);
+        else
+            PrepareDestination();
+    }
+
     public void Stop()
     {
         if (!IsRunning)
             return;
 
         IsRunning = false;
+        IsTest = false;
         StopPath();
         DisableAutoHook();
         target = null;
@@ -145,7 +193,8 @@ public sealed class FishingAutomation : IDisposable
         var now = DateTime.UtcNow;
 
         // Fisch inzwischen gefangen oder Fenster vorbei - AutoHook aus, auf den nächsten warten.
-        if (target != null && state != State.Waiting)
+        // (Nicht bei "Fliege zum Fisch" - das fliegt nur zur Position.)
+        if (target != null && state != State.Waiting && !IsTest)
         {
             if (FishCatchState.IsCaught(target.ItemId))
             {
@@ -189,6 +238,9 @@ public sealed class FishingAutomation : IDisposable
             case State.Flying:
                 UpdateFlying(now);
                 break;
+            case State.ExactPositioning:
+                UpdateExactPositioning(now);
+                break;
             case State.Landing:
                 UpdateLanding(now);
                 break;
@@ -206,12 +258,15 @@ public sealed class FishingAutomation : IDisposable
 
     // ---- Warten auf den nächsten Fisch ----
 
-    /// <summary>Angehakte, noch nicht gefangene Fische mit Angel-Position, samt Fenster und Startzeit (Fenster minus Prep Timer).</summary>
+    /// <summary>Ob für diesen Fisch eine Angel-Position eingetragen ist (sonst kann die Automation ihn nicht anfliegen).</summary>
+    public bool CanReach(BigFish fish) => FishingPositionStore.Get(plugin.Configuration, fish.ItemId) != null;
+
+    /// <summary>Angehakte, noch nicht gefangene, erreichbare Fische, samt Fenster und Startzeit (Fenster minus Prep Timer).</summary>
     public (BigFish Fish, FishWindow Window, DateTime TriggerUtc)[] GetPlannedFish(DateTime nowUtc)
     {
         var config = plugin.Configuration;
         return BigFishData.Dawntrail
-            .Where(f => config.EnabledFish.Contains(f.ItemId) && BigFishData.FishingPositions.ContainsKey(f.ItemId) && !FishCatchState.IsCaught(f.ItemId))
+            .Where(f => config.EnabledFish.Contains(f.ItemId) && CanReach(f) && !FishCatchState.IsCaught(f.ItemId))
             .Select(f => (Fish: f, Window: FishWindows.GetCurrentOrNext(f, nowUtc)))
             .Where(x => x.Window != null)
             .Select(x => (x.Fish, x.Window!.Value,
@@ -226,8 +281,8 @@ public sealed class FishingAutomation : IDisposable
         if (planned.Length == 0)
         {
             StatusText = Loc.T(
-                "Kein angehakter Fisch mit bekannter Angel-Position (oder alle gefangen).",
-                "No enabled fish with a known fishing position (or all caught).");
+                "Kein angehakter Fisch, der angeflogen werden kann (oder alle gefangen).",
+                "No enabled fish that can be reached (or all caught).");
             return;
         }
 
@@ -249,7 +304,27 @@ public sealed class FishingAutomation : IDisposable
         if (Plugin.ClientState.TerritoryType != target.TerritoryId)
             SetState(State.Teleporting);
         else
-            SetState(State.Mounting);
+            PrepareDestination();
+    }
+
+    /// <summary>Ziel festlegen (in der richtigen Zone): die eingetragene Angel-Position des Fischs.</summary>
+    private void PrepareDestination()
+    {
+        pathAttempts = 0;
+
+        if (FishingPositionStore.Get(plugin.Configuration, target!.ItemId) is not { } known)
+        {
+            var message = Loc.T($"Keine Angel-Position für {FishName(target)} eingetragen.", $"No fishing position set for {FishName(target)}.");
+            if (IsTest)
+                FinishTest(message);
+            else
+                Finish(message);
+            return;
+        }
+
+        destination = known.Position;
+        destinationFacing = known.Facing;
+        SetState(State.Mounting);
     }
 
     // ---- Teleport in die Zone ----
@@ -261,8 +336,8 @@ public sealed class FishingAutomation : IDisposable
         if (Plugin.Condition[ConditionFlag.Casting] || now - lastActionAt < TeleportRetryInterval)
             return;
 
-        var position = BigFishData.FishingPositions[target!.ItemId];
-        var aetheryte = GameActions.FindNearestAetheryte(target.TerritoryId, position);
+        var reference = FishingPositionStore.Get(plugin.Configuration, target!.ItemId)?.Position ?? Vector3.Zero;
+        var aetheryte = GameActions.FindNearestAetheryte(target.TerritoryId, reference);
         if (aetheryte == null)
         {
             StatusText = Loc.T("Kein freigeschalteter Ätherit in der Zone - gestoppt.", "No unlocked aetheryte in the zone - stopped.");
@@ -271,10 +346,24 @@ public sealed class FishingAutomation : IDisposable
         }
 
         lastActionAt = now;
-        if (GameActions.Teleport(aetheryte.Value))
+        if (TeleportViaLifestream(aetheryte.Value) || GameActions.Teleport(aetheryte.Value))
         {
             Plugin.Log.Info($"[FishingAutomation] Teleport zu Ätherit #{aetheryte.Value}.");
             SetState(State.WaitingForZone);
+        }
+    }
+
+    // Teleport über Lifestream (Pflicht-Plugin) - schlägt das fehl, wird der spieleigene Teleport genutzt.
+    private bool TeleportViaLifestream(uint aetheryteId)
+    {
+        try
+        {
+            return lifestreamTeleport.HasFunction && lifestreamTeleport.InvokeFunc(aetheryteId, 0);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] Lifestream-Teleport fehlgeschlagen - nutze den normalen Teleport.");
+            return false;
         }
     }
 
@@ -285,7 +374,7 @@ public sealed class FishingAutomation : IDisposable
         if (Plugin.ClientState.TerritoryType == target!.TerritoryId)
         {
             if (now - stateEnteredAt >= ZoneSettleDelay)
-                SetState(State.Mounting);
+                PrepareDestination();
             return;
         }
 
@@ -328,11 +417,10 @@ public sealed class FishingAutomation : IDisposable
             return;
         }
 
-        var position = BigFishData.FishingPositions[target!.ItemId];
         var fly = Plugin.Condition[ConditionFlag.Mounted];
-        var accepted = fly && pathfindAndMoveCloseTo.InvokeFunc(position, true, ArrivalTolerance);
+        var accepted = fly && pathfindAndMoveCloseTo.InvokeFunc(destination, true, ArrivalTolerance);
         if (!accepted)
-            accepted = pathfindAndMoveCloseTo.InvokeFunc(position, false, ArrivalTolerance);
+            accepted = pathfindAndMoveCloseTo.InvokeFunc(destination, false, ArrivalTolerance);
 
         pathAttempts++;
         hasSeenPathRunning = false;
@@ -395,8 +483,90 @@ public sealed class FishingAutomation : IDisposable
             return;
         }
 
-        if (now - stateEnteredAt >= SettleDelay && !Plugin.Condition[ConditionFlag.Jumping])
-            SetState(State.SwitchingJob);
+        if (now - stateEnteredAt < SettleDelay || Plugin.Condition[ConditionFlag.Jumping])
+            return;
+
+        // Noch nicht exakt auf der Angel-Position - das letzte Stück zu Fuß genau draufstellen.
+        if (!IsNear(ExactPositionTolerance))
+        {
+            SetState(State.ExactPositioning);
+            return;
+        }
+
+        ArrivedAtFishingPosition();
+    }
+
+    /// <summary>
+    /// Nach dem Absteigen: in gerader Linie (vnavmesh Path.MoveTo) mit enger Wegpunkt-Toleranz exakt
+    /// auf die eingetragene Angel-Position laufen, danach die Toleranz wieder zurücksetzen.
+    /// </summary>
+    private void UpdateExactPositioning(DateTime now)
+    {
+        StatusText = Loc.T("Stelle mich genau auf die Angel-Position...", "Stepping exactly onto the fishing position...");
+
+        if (lastActionAt == DateTime.MinValue)
+        {
+            lastActionAt = now;
+            try
+            {
+                savedPathTolerance ??= pathGetTolerance.InvokeFunc();
+                pathSetTolerance.InvokeAction(ExactPathTolerance);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warning(ex, "[FishingAutomation] vnavmesh-Toleranz konnte nicht gesetzt werden.");
+            }
+
+            moveToPath.InvokeAction(new List<Vector3> { destination }, false);
+            return;
+        }
+
+        var running = pathIsRunning.InvokeFunc();
+        if ((running || now - lastActionAt < TimeSpan.FromSeconds(0.3)) && now - stateEnteredAt < ExactPositioningTimeout)
+            return;
+
+        StopPath();
+        RestorePathTolerance();
+        var player = Plugin.ObjectTable.LocalPlayer;
+        if (player != null)
+            Plugin.Log.Info($"[FishingAutomation] Angel-Position erreicht (Abweichung {Vector3.Distance(player.Position, destination):F2}).");
+        ArrivedAtFishingPosition();
+    }
+
+    private void RestorePathTolerance()
+    {
+        if (savedPathTolerance is not { } tolerance)
+            return;
+
+        savedPathTolerance = null;
+        try
+        {
+            pathSetTolerance.InvokeAction(tolerance);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] vnavmesh-Toleranz konnte nicht zurückgesetzt werden.");
+        }
+    }
+
+    private void ArrivedAtFishingPosition()
+    {
+        // "Fliege zum Fisch": angekommen - zum Wasser drehen und fertig.
+        if (IsTest)
+        {
+            FaceWater();
+            FinishTest(Loc.T($"An der Angel-Position von {FishName(target!)} angekommen.", $"Arrived at the fishing position of {FishName(target!)}."));
+            return;
+        }
+
+        SetState(State.SwitchingJob);
+    }
+
+    private void FinishTest(string message)
+    {
+        Plugin.Log.Info($"[FishingAutomation] {message}");
+        Stop();
+        StatusText = message;
     }
 
     // ---- Fischer, AutoHook, Angeln ----
@@ -488,10 +658,10 @@ public sealed class FishingAutomation : IDisposable
         Plugin.CommandManager.ProcessCommand("/ahstart");
     }
 
-    // Vor dem Auswerfen Richtung Wasser drehen (siehe BigFishData.FishingFacings).
+    // Vor dem Auswerfen Richtung Wasser drehen (Blickrichtung der Angel-Position).
     private void FaceWater()
     {
-        if (target != null && BigFishData.FishingFacings.TryGetValue(target.ItemId, out var facing))
+        if (destinationFacing is { } facing)
             GameActions.Face(facing);
     }
 
@@ -518,11 +688,12 @@ public sealed class FishingAutomation : IDisposable
     {
         var player = Plugin.ObjectTable.LocalPlayer;
         return target != null && player != null && Plugin.ClientState.TerritoryType == target.TerritoryId
-               && Vector3.Distance(player.Position, BigFishData.FishingPositions[target.ItemId]) <= distance;
+               && Vector3.Distance(player.Position, destination) <= distance;
     }
 
     private void StopPath()
     {
+        RestorePathTolerance(); // enge Toleranz (siehe UpdateExactPositioning) nie stehen lassen
         try
         {
             if (pathStop.HasAction)
