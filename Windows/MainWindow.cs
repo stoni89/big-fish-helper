@@ -23,6 +23,7 @@ public class MainWindow : Window
     private enum RailPage
     {
         Play,
+        FishData,
         Settings,
         Dependencies,
         About,
@@ -37,10 +38,10 @@ public class MainWindow : Window
     private static readonly string IconPath =
         Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, "Data", "icon.png");
 
-    private RailPage railPage = RailPage.Settings;
+    private RailPage railPage = RailPage.FishData;
     private bool collapsed;
     private bool collapsedLastFrame;
-    private Vector2 expandedSize = new(746f, 960f);
+    private Vector2 expandedSize = new(1126f, 900f);
 
     // Rechter Randabstand für jeden Tab-Inhalt - dieselbe Größe wie der Abstand von der vertikalen
     // Trennlinie zu den Tab-Inhalten.
@@ -61,8 +62,8 @@ public class MainWindow : Window
 
     private static readonly WindowSizeConstraints ExpandedSizeConstraints = new()
     {
-        MinimumSize = new Vector2(520 + ContentRightMargin, 930),
-        MaximumSize = new Vector2(1100 + ContentRightMargin, 1050),
+        MinimumSize = new Vector2(700, 480),
+        MaximumSize = new Vector2(2400, 1600),
     };
 
     private static readonly WindowSizeConstraints CollapsedSizeConstraints = new()
@@ -73,7 +74,7 @@ public class MainWindow : Window
 
 
     private const ImGuiWindowFlags BaseFlags =
-        ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse | ImGuiWindowFlags.NoResize;
+        ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
 
     public MainWindow(Plugin plugin) : base($"{PluginDisplayName} (v{VersionText})##BigFishHelper", BaseFlags)
     {
@@ -86,12 +87,8 @@ public class MainWindow : Window
 
     public void Dispose() { }
 
-    // Bei jedem Öffnen in voller Breite und Höhe (siehe PreDraw).
-    private bool openAtFullSize = true;
-
     public override void OnOpen()
     {
-        openAtFullSize = true;
         collapsed = false;
     }
 
@@ -106,19 +103,13 @@ public class MainWindow : Window
     public override void PreDraw()
     {
         SizeConstraints = collapsed ? CollapsedSizeConstraints : ExpandedSizeConstraints;
-        Flags = BaseFlags;
+        // Ausgeklappt frei in der Größe veränderbar - eingeklappt nicht (dort würde die Zieh-Zone des
+        // Rahmens die ganze niedrige Titelleiste überdecken und den Doppelklick zum Ausklappen abfangen).
+        Flags = collapsed ? BaseFlags | ImGuiWindowFlags.NoResize : BaseFlags;
 
-        if (openAtFullSize && !collapsed)
-        {
-            // Maximalgröße, aber nie größer als der sichtbare Bildschirmbereich.
-            openAtFullSize = false;
-            var workSize = ImGui.GetMainViewport().WorkSize;
-            var max = ExpandedSizeConstraints.MaximumSize;
-            expandedSize = new Vector2(MathF.Min(max.X, workSize.X), MathF.Min(max.Y, workSize.Y));
-            Size = expandedSize;
-            SizeCondition = ImGuiCond.Always;
-        }
-        else if (!collapsed && collapsedLastFrame)
+        // Frei veränderbare Größe - ImGui merkt sie sich selbst (auch über Neustarts); die Startgröße
+        // (expandedSize) gilt nur beim allerersten Öffnen (FirstUseEver).
+        if (!collapsed && collapsedLastFrame)
         {
             Size = expandedSize;
             SizeCondition = ImGuiCond.Always;
@@ -275,10 +266,11 @@ public class MainWindow : Window
         ImGui.BeginChild("##OptionsRail", new Vector2(railWidth, 0f), false, ImGuiWindowFlags.NoScrollbar);
         ImGui.Spacing();
 
-        // Play ganz oben - öffnet die Start-Seite. Ausgegraut, solange in den Einstellungen kein Fisch
+        // Play ganz oben - öffnet die Start-Seite. Ausgegraut, solange in den Fischdaten kein Fisch
         // angehakt ist (außer die Automation läuft noch - dann muss man sie stoppen können).
         var automation = plugin.Automation;
-        var playDisabled = !automation.HasEnabledFish && !automation.IsRunning;
+        var missingPlugin = HasMissingRequiredDependency();
+        var playDisabled = !automation.IsRunning && (!automation.HasEnabledFish || missingPlugin);
         if (playDisabled && railPage == RailPage.Play)
             railPage = RailPage.Settings;
         if (playDisabled)
@@ -289,13 +281,16 @@ public class MainWindow : Window
         {
             ImGui.EndDisabled();
             if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                ImGui.SetTooltip(NoFishSelectedText);
+                ImGui.SetTooltip(missingPlugin ? MissingPluginText : NoFishSelectedText);
         }
 
         // Etwas mehr Abstand, damit Play sichtbar von den Seiten-Knöpfen getrennt ist.
         ImGui.Dummy(new Vector2(0f, 10f));
         if (ModernUi.RailButton(FontAwesomeIcon.SlidersH, railPage == RailPage.Settings, Loc.T("Einstellungen", "Settings")))
             railPage = RailPage.Settings;
+        ImGui.Spacing();
+        if (ModernUi.RailButton(FontAwesomeIcon.Fish, railPage == RailPage.FishData, Loc.T("Fischdaten", "Fish Data")))
+            railPage = RailPage.FishData;
         ImGui.Spacing();
         if (ModernUi.RailButton(FontAwesomeIcon.Plug, railPage == RailPage.Dependencies, Loc.T("Plugins", "Plugins"), HasMissingRequiredDependency()))
             railPage = RailPage.Dependencies;
@@ -322,6 +317,15 @@ public class MainWindow : Window
             ImGui.Spacing();
             ImGui.Indent(4f);
             DrawPlayPage();
+            ImGui.Unindent(4f);
+            ImGui.EndChild();
+        }
+        else if (railPage == RailPage.FishData)
+        {
+            ImGui.BeginChild("##FishDataContent", contentSize, false);
+            ImGui.Spacing();
+            ImGui.Indent(4f);
+            DrawFishDataPage();
             ImGui.Unindent(4f);
             ImGui.EndChild();
         }
@@ -357,13 +361,15 @@ public class MainWindow : Window
 
     // ---- Start (Play) ----
 
+    private static string MissingPluginText => Loc.T("Ein benötigtes Plugin fehlt (siehe Plugins).", "A required plugin is missing (see Plugins).");
+
     private static string NoFishSelectedText => Loc.T(
-        "Kein Fisch ausgewählt - hake in den Einstellungen mindestens einen Fisch an.",
-        "No fish selected - enable at least one fish in the settings.");
+        "Kein Fisch ausgewählt - hake unter Fischdaten mindestens einen Fisch an.",
+        "No fish selected - enable at least one fish under Fish Data.");
 
     /// <summary>
     /// Start-Seite: großer Start-/Stop-Knopf, aktueller Status der Automation und die angehakten
-    /// Fische in der Reihenfolge, in der sie drankommen (Start = nächstes Fenster minus Prep Timer).
+    /// Fische in der Reihenfolge, in der sie drankommen (Abflug = Prep Time minus Vorlaufzeit, Angeln ab der Prep Time).
     /// </summary>
     private void DrawPlayPage()
     {
@@ -371,8 +377,8 @@ public class MainWindow : Window
         ModernUi.SectionHeader(
             Loc.T("Start", "Start"),
             Loc.T(
-                "Fliegt zum nächsten angehakten Fisch, sobald sein Fenster minus Prep Timer erreicht ist, wechselt auf Fischer und angelt mit dem AutoHook-Preset.",
-                "Flies to the next enabled fish once its window minus prep timer is reached, switches to Fisher and fishes with the AutoHook preset."));
+                "Fliegt vor der Prep Time zum nächsten angehakten Fisch (Vorlaufzeit siehe Einstellungen), wechselt auf Fischer und angelt ab der Prep Time mit dem AutoHook-Preset.",
+                "Flies to the next enabled fish before its prep time (lead time see settings), switches to Fisher and fishes with the AutoHook preset from the prep time on."));
 
         // Großer Start-/Stop-Knopf über die volle Breite.
         var running = automation.IsRunning;
@@ -397,7 +403,7 @@ public class MainWindow : Window
         if (disabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(!automation.HasEnabledFish
                 ? NoFishSelectedText
-                : Loc.T("Ein benötigtes Plugin fehlt (siehe Plugins).", "A required plugin is missing (see Plugins)."));
+                : MissingPluginText);
 
         if (clicked)
         {
@@ -432,43 +438,47 @@ public class MainWindow : Window
         var planned = automation.GetPlannedFish(now);
         ModernUi.GroupLabel(Loc.T("Geplante Fische", "Planned fish"));
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX;
-        if (ImGui.BeginTable("##PlannedFish", 4, tableFlags))
+        if (ImGui.BeginTable("##PlannedFish", 5, tableFlags))
         {
             ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
-            ImGui.TableSetupColumn("##Start", ImGuiTableColumnFlags.WidthFixed, 170f);
-            ImGui.TableSetupColumn("##Position", ImGuiTableColumnFlags.WidthFixed, 150f);
-            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 220f);
-            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("START", "START")), (2, Loc.T("POSITION", "POSITION")), (3, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 3);
+            ImGui.TableSetupColumn("##Departure", ImGuiTableColumnFlags.WidthFixed, 140f);
+            ImGui.TableSetupColumn("##FishingStart", ImGuiTableColumnFlags.WidthFixed, 140f);
+            ImGui.TableSetupColumn("##Position", ImGuiTableColumnFlags.WidthFixed, 110f);
+            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 200f);
+            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("ABFLUG", "DEPARTURE")), (2, Loc.T("ANGELN AB", "FISHING FROM")), (3, Loc.T("POSITION", "POSITION")), (4, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 4);
 
-            foreach (var (fish, window, trigger) in planned)
+            foreach (var (fish, window, travel, fishStart) in planned)
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
                 ImGui.TextUnformatted(FishingAutomation.FishName(fish));
 
+                // Abflug (Prep Time minus Vorlaufzeit).
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
-                if (now >= trigger)
-                    ImGui.TextColored(CaughtColor, window.IsActive(now) ? Loc.T("Fenster aktiv", "Window active") : Loc.T("Jetzt (Vorbereitung)", "Now (prep)"));
+                if (now >= travel)
+                    ImGui.TextColored(CaughtColor, Loc.T("Jetzt", "Now"));
                 else
-                    ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(trigger - now)}", $"in {FormatCountdown(trigger - now)}"));
+                    ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(travel - now)}", $"in {FormatCountdown(travel - now)}"));
 
-                // Woher die Angel-Position kommt (bzw. dass sie vor Ort gesucht wird).
+                // Angel-Start (Prep Time) bzw. aktives Fenster.
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
-                switch (FishingPositionStore.Get(config, fish.ItemId)?.Source)
-                {
-                    case FishingPositionSource.Saved:
-                        ImGui.TextColored(CaughtColor, Loc.T("Gespeichert", "Saved"));
-                        break;
-                    case FishingPositionSource.Builtin:
-                        ImGui.TextColored(CaughtColor, Loc.T("Hinterlegt", "Built-in"));
-                        break;
-                    default:
-                        ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
-                        break;
-                }
+                if (window.IsActive(now))
+                    ImGui.TextColored(CaughtColor, Loc.T("Fenster aktiv", "Window active"));
+                else if (now >= fishStart)
+                    ImGui.TextColored(CaughtColor, Loc.T("Jetzt (Vorbereitung)", "Now (prep)"));
+                else
+                    ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(fishStart - now)}", $"in {FormatCountdown(fishStart - now)}"));
+
+                // Ob für den Fisch eine Angel-Position eingetragen ist.
+                ImGui.TableNextColumn();
+                ImGui.AlignTextToFramePadding();
+                if (FishingPositionStore.Get(fish.ItemId) != null)
+                    ImGui.TextColored(CaughtColor, Loc.T("Hinterlegt", "Set"));
+                else
+                    ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
 
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
@@ -486,6 +496,8 @@ public class MainWindow : Window
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
                 ImGui.TextColored(ModernUi.TextMuted, FishingAutomation.FishName(fish));
+                ImGui.TableNextColumn();
+                ImGui.TextColored(ModernUi.TextMuted, "-");
                 ImGui.TableNextColumn();
                 ImGui.TextColored(ModernUi.TextMuted, "-");
                 ImGui.TableNextColumn();
@@ -519,16 +531,100 @@ public class MainWindow : Window
     private static readonly Vector4 CaughtColor = new(0.45f, 0.9f, 0.45f, 1f);
     private static readonly Vector4 NotCaughtColor = new(0.95f, 0.35f, 0.4f, 1f);
 
+    private string mountFilter = string.Empty;
+
     /// <summary>
-    /// Einstellungen: alle Big Fish (bisher Dawntrail) mit Gefangen-Status, Name, Countdown bis zum
-    /// nächsten Fenster (bzw. Restdauer, solange es aktiv ist), Fensterdauer, Prep Timer und
-    /// AutoHook-Preset pro Fisch. Sortiert nach dem nächsten Fenster - aktive zuerst.
+    /// Trennlinie innerhalb einer Karte, die genauso weit von der Zeile darüber und darunter entfernt
+    /// ist wie der Kartenrand (ModernUi.CardVerticalPadding) - dadurch sitzt jede Zeile vertikal mittig
+    /// zwischen Kartenrand und Linie bzw. zwischen zwei Linien.
     /// </summary>
+    private static void DrawCardSeparator()
+    {
+        var spacingY = ImGui.GetStyle().ItemSpacing.Y;
+        var gap = ModernUi.CardVerticalPadding;
+        var cursor = ImGui.GetCursorScreenPos();
+
+        // Der Cursor steht bereits ItemSpacing.Y unter der vorherigen Zeile.
+        var lineY = cursor.Y - spacingY + gap;
+        var width = ImGui.GetContentRegionAvail().X - ModernUi.CardMargin;
+        ImGui.GetWindowDrawList().AddLine(new Vector2(cursor.X, lineY), new Vector2(cursor.X + width, lineY), ImGui.GetColorU32(ImGuiCol.Separator));
+
+        // Nächste Zeile beginnt "gap" unter der Linie (Dummy + ItemSpacing ergeben zusammen 2*gap).
+        ImGui.Dummy(new Vector2(0f, MathF.Max(0f, gap * 2f - spacingY * 2f)));
+    }
+
+    // Obergrenze für "so viele Minuten vor der Prep Time zur Position fliegen".
+    private const int MaxTravelLeadMinutes = 30;
+
+    /// <summary>Einstellungen: Mount zum Fliegen und wie früh vor der Prep Time zur Angel-Position geflogen wird.</summary>
     private void DrawSettingsPage()
     {
         var config = plugin.Configuration;
+        ModernUi.SectionHeader(Loc.T("Einstellungen", "Settings"), Loc.T("Allgemeine Einstellungen der Automation.", "General settings of the automation."));
+
+        ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));
+        ModernUi.BeginCard();
+
+        // Mount (Standard: Mount Roulette), mit Suchfeld.
+        var rouletteLabel = Loc.T("Mount Roulette", "Mount Roulette");
+        var currentLabel = config.FlyingMountId == 0 ? rouletteLabel : GameActions.MountName(config.FlyingMountId);
+        ModernUi.LabelRow(Loc.T("Mount zum Fliegen", "Mount for flying"), 280f,
+            Loc.T("Mit diesem Mount fliegt die Automation zur Angel-Position.", "The automation flies to the fishing position with this mount."));
+        if (ImGui.BeginCombo("##FlyingMount", currentLabel))
+        {
+            if (ImGui.Selectable(rouletteLabel, config.FlyingMountId == 0))
+            {
+                config.FlyingMountId = 0;
+                config.Save();
+            }
+
+            ImGui.Separator();
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputTextWithHint("##MountFilter", Loc.T("Mounts durchsuchen...", "Search mounts..."), ref mountFilter, 100);
+
+            ImGui.BeginChild("##MountList", new Vector2(0f, 200f));
+            foreach (var (id, name) in GameActions.GetUnlockedMounts())
+            {
+                if (!string.IsNullOrWhiteSpace(mountFilter) && !name.Contains(mountFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (ImGui.Selectable($"{name}##mount_{id}", config.FlyingMountId == id))
+                {
+                    config.FlyingMountId = id;
+                    config.Save();
+                }
+            }
+            ImGui.EndChild();
+
+            ImGui.EndCombo();
+        }
+
+        // Trennlinie zwischen den Einstellungen (wie im Explorer's Codex) - vertikal mittig zwischen den Zeilen.
+        DrawCardSeparator();
+
+        // Vorlaufzeit: so viele Minuten vor der Prep Time schon zur Position fliegen.
+        var lead = Math.Clamp(config.TravelLeadMinutes, 0, MaxTravelLeadMinutes);
+        ModernUi.LabelRow(Loc.T("Vorher zur Position fliegen", "Fly to the position beforehand"), 280f,
+            Loc.T(
+                "So viele Minuten vor der Prep Time fliegt die Automation schon zur Angel-Position und wartet dort. Geangelt wird erst ab der Prep Time.",
+                "The automation flies to the fishing position this many minutes before the prep time and waits there. Fishing only starts at the prep time."));
+        if (ImGui.SliderInt("##TravelLead", ref lead, 0, MaxTravelLeadMinutes, lead == 0 ? Loc.T("Genau zur Prep Time", "Exactly at prep time") : Loc.T("%d Min. vorher", "%d min before")))
+            config.TravelLeadMinutes = lead;
+        if (ImGui.IsItemDeactivatedAfterEdit())
+            config.Save();
+
+        ModernUi.EndCard();
+    }
+
+    /// <summary>
+    /// Fischdaten: alle Big Fish (bisher Dawntrail) mit Auswahl, Gefangen-Status, nächstem Fenster,
+    /// Dauer, Prep Timer, AutoHook-Preset und "Fliege zum Fisch".
+    /// </summary>
+    private void DrawFishDataPage()
+    {
+        var config = plugin.Configuration;
         ModernUi.SectionHeader(
-            Loc.T("Einstellungen", "Settings"),
+            Loc.T("Fischdaten", "Fish Data"),
             Loc.T("Big Fish aus Dawntrail und wann sie das nächste Mal beißen.", "Dawntrail Big Fish and when they bite next."));
 
         var hideCaught = config.HideCaughtFish;
@@ -562,14 +658,14 @@ public class MainWindow : Window
         var presetNames = AutoHookPresets.GetNames();
 
         // "Position speichern" nur in der Dev-Version (als Dev-Plugin geladen) - zum Erfassen der
-        // Angel-Positionen, die danach fest in BigFishData übernommen werden.
+        // Angel-Positionen (landen in Data/FishingPositions.json und damit beim nächsten Release bei allen).
         var isDev = Plugin.PluginInterface.IsDev;
         if (!ImGui.BeginTable("##BigFishTimers", isDev ? 9 : 8, tableFlags))
             return;
 
         ImGui.TableSetupColumn("##Enabled", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
-        ImGui.TableSetupColumn("##Status", ImGuiTableColumnFlags.WidthFixed, 28f);
         ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
+        ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthFixed, 60f);
         ImGui.TableSetupColumn("##NextWindow", ImGuiTableColumnFlags.WidthFixed, 170f);
         ImGui.TableSetupColumn("##Duration", ImGuiTableColumnFlags.WidthFixed, 80f);
         ImGui.TableSetupColumn("##PrepTimer", ImGuiTableColumnFlags.WidthFixed, 150f);
@@ -577,15 +673,18 @@ public class MainWindow : Window
         ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
         if (isDev)
             ImGui.TableSetupColumn("##SavePosition", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
-        DrawTableHeader(new[] { (2, Loc.T("FISCH", "FISH")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") }, lastColumn: isDev ? 8 : 7);
+        DrawTableHeader(new[] { (1, Loc.T("FISCH", "FISH")), (2, Loc.T("KÖDER", "BAIT")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") }, lastColumn: isDev ? 8 : 7);
 
         foreach (var (fish, caught, window) in rows)
         {
             ImGui.TableNextRow();
 
-            // Auswahl, ob man diesen Fisch machen will.
+            // Auswahl, ob man diesen Fisch machen will - nur mit eingetragener Angel-Position möglich.
             ImGui.TableNextColumn();
-            var enabled = config.EnabledFish.Contains(fish.ItemId);
+            var supported = FishingPositionStore.Get(fish.ItemId) != null;
+            var enabled = supported && config.EnabledFish.Contains(fish.ItemId);
+            if (!supported)
+                ImGui.BeginDisabled();
             if (ImGui.Checkbox($"##enabled_{fish.ItemId}", ref enabled))
             {
                 if (enabled)
@@ -594,24 +693,28 @@ public class MainWindow : Window
                     config.EnabledFish.Remove(fish.ItemId);
                 config.Save();
             }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(Loc.T("Diesen Fisch machen", "Go for this fish"));
+            if (!supported)
+                ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip(supported ? Loc.T("Diesen Fisch machen", "Go for this fish") : Loc.T("Aktuell nicht unterstützt", "Currently unsupported"));
 
-            // Gefangen: grüner Haken / rotes X.
-            ImGui.TableNextColumn();
-            ImGui.AlignTextToFramePadding();
-            using (Plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
-                ImGui.TextColored(caught ? CaughtColor : NotCaughtColor, (caught ? FontAwesomeIcon.Check : FontAwesomeIcon.Times).ToIconString());
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(caught ? Loc.T("Gefangen", "Caught") : Loc.T("Noch nicht gefangen", "Not caught yet"));
-
-            // Name (Angelplatz als Tooltip).
+            // Name (Angelplatz als Tooltip), direkt dahinter: gefangen = grüner Haken, sonst rotes X.
             ImGui.TableNextColumn();
             ImGui.AlignTextToFramePadding();
             var name = itemSheet.TryGetRow(fish.ItemId, out var item) ? item.Name.ToString() : $"#{fish.ItemId}";
             ImGui.TextUnformatted(name);
             if (ImGui.IsItemHovered() && spotSheet.TryGetRow(fish.FishingSpotId, out var spot))
                 ImGui.SetTooltip(spot.PlaceName.ValueNullable?.Name.ToString() ?? string.Empty);
+
+            ImGui.SameLine(0f, 8f);
+            using (Plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+                ImGui.TextColored(caught ? CaughtColor : NotCaughtColor, (caught ? FontAwesomeIcon.Check : FontAwesomeIcon.Times).ToIconString());
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(caught ? Loc.T("Gefangen", "Caught") : Loc.T("Noch nicht gefangen", "Not caught yet"));
+
+            // Benötigter Köder als Icon (Name als Tooltip).
+            ImGui.TableNextColumn();
+            DrawBaitIcons(fish, itemSheet);
 
             // Countdown bis zum nächsten Fenster bzw. Restdauer des aktiven.
             ImGui.TableNextColumn();
@@ -668,7 +771,7 @@ public class MainWindow : Window
             if (isDev)
             {
                 ImGui.TableNextColumn();
-                DrawSavePositionButton(config, fish);
+                DrawSavePositionButton(fish);
             }
         }
 
@@ -676,16 +779,50 @@ public class MainWindow : Window
     }
 
     /// <summary>
+    /// Köder-Spalte: Icon des benötigten Köders - nur der erste eingetragene (auch bei gleichwertigen
+    /// Alternativen), damit die Zeile nicht unnötig breit wird. Tooltip: Name des Köders.
+    /// </summary>
+    private static void DrawBaitIcons(BigFish fish, Lumina.Excel.ExcelSheet<Lumina.Excel.Sheets.Item> itemSheet)
+    {
+        string ItemName(uint id) => itemSheet.TryGetRow(id, out var row) ? row.Name.ToString() : $"#{id}";
+
+        var iconSize = new Vector2(ImGui.GetFrameHeight(), ImGui.GetFrameHeight());
+        if (fish.BaitIds.Length > 0)
+        {
+            var baitId = fish.BaitIds[0];
+            if (itemSheet.TryGetRow(baitId, out var bait) && bait.Icon != 0)
+            {
+                var icon = Plugin.TextureProvider.GetFromGameIcon(new Dalamud.Interface.Textures.GameIconLookup(bait.Icon)).GetWrapOrEmpty();
+                ImGui.Image(icon.Handle, iconSize);
+            }
+            else
+            {
+                ImGui.Dummy(iconSize);
+            }
+
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(ItemName(baitId));
+
+            // Anzahl im eigenen Inventar direkt hinter dem Icon.
+            ImGui.SameLine(0f, 3f);
+            var count = GameActions.GetInventoryItemCount(baitId);
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextColored(count > 0 ? ModernUi.TextMuted : NotCaughtColor, count.ToString());
+        }
+    }
+
+    /// <summary>
     /// "Fliege zum Fisch" pro Fisch: fliegt sofort zur eingetragenen Angel-Position (Teleport, falls
-    /// nötig), landet und dreht sich zum Wasser - ohne zu angeln. Solange das für diesen Fisch läuft,
-    /// wird der Knopf zum Stop-Knopf.
+    /// nötig), landet und dreht sich zum Wasser - ohne zu angeln. Ist noch keine Position gespeichert,
+    /// fliegt er stattdessen zum ungefähren Angelplatz, damit man die Stelle selbst finden und
+    /// anschließend speichern kann. Solange das für diesen Fisch läuft, wird der Knopf zum Stop-Knopf.
     /// </summary>
     private void DrawFlyToFishButton(BigFish fish)
     {
         var automation = plugin.Automation;
         var testingThis = automation.TestTarget?.ItemId == fish.ItemId;
         var mainRunning = automation.IsRunning && automation.TestTarget == null;
-        var disabled = !testingThis && (mainRunning || HasMissingRequiredDependency() || !automation.CanReach(fish));
+        var disabled = !testingThis && (mainRunning || HasMissingRequiredDependency() || !automation.CanFlyToFish(fish));
         var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
 
         ImGui.PushStyleColor(ImGuiCol.Button, testingThis ? new Vector4(0.85f, 0.3f, 0.35f, 0.8f) : new Vector4(0f, 0f, 0f, 0f));
@@ -705,10 +842,14 @@ public class MainWindow : Window
                 : mainRunning
                     ? Loc.T("Nicht möglich, solange die Automation läuft.", "Not possible while the automation is running.")
                     : HasMissingRequiredDependency()
-                        ? Loc.T("Ein benötigtes Plugin fehlt (siehe Plugins).", "A required plugin is missing (see Plugins).")
-                        : !automation.CanReach(fish)
-                            ? Loc.T("Keine Angel-Position eingetragen.", "No fishing position set.")
-                            : Loc.T("Fliege zum Fisch (zur Angel-Position, ohne zu angeln)", "Fly to fish (to the fishing position, without fishing)"));
+                        ? MissingPluginText
+                        : !automation.CanFlyToFish(fish)
+                            ? Loc.T("Angelplatz unbekannt.", "Fishing spot unknown.")
+                            : automation.CanReach(fish)
+                                ? Loc.T("Fliege zum Fisch (zur Angel-Position, ohne zu angeln)", "Fly to fish (to the fishing position, without fishing)")
+                                : Loc.T(
+                                    "Keine Position gespeichert - fliege zum ungefähren Angelplatz, damit du die genaue Stelle finden und speichern kannst.",
+                                    "No position saved - flies to the approximate fishing spot so you can find and save the exact spot."));
         }
 
         if (!clicked)
@@ -722,14 +863,15 @@ public class MainWindow : Window
 
     /// <summary>
     /// Nur Dev-Version: speichert die aktuelle Position + Blickrichtung als Angel-Position dieses
-    /// Fischs (nur in dessen Zone möglich) und kopiert die passenden Code-Zeilen für BigFishData in die
-    /// Zwischenablage. Umschalt+Klick entfernt eine gespeicherte Position wieder.
+    /// Fischs (nur in dessen Zone möglich) - direkt in Data/FishingPositions.json im Projektordner, damit
+    /// sie mit dem nächsten Commit/Release bei allen Nutzern ankommt. Umschalt+Klick entfernt sie wieder.
     /// </summary>
-    private static void DrawSavePositionButton(Configuration config, BigFish fish)
+    private static void DrawSavePositionButton(BigFish fish)
     {
         var player = Plugin.ObjectTable.LocalPlayer;
         var inZone = player != null && Plugin.ClientState.TerritoryType == fish.TerritoryId;
-        var hasSaved = config.SavedFishingPositions.TryGetValue(fish.ItemId, out var saved);
+        var saved = FishingPositionStore.Get(fish.ItemId);
+        var hasSaved = saved != null;
         var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
 
         ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0f, 0f, 0f, 0f));
@@ -744,11 +886,12 @@ public class MainWindow : Window
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
+            var p = saved?.Position ?? Vector3.Zero;
             var info = hasSaved
-                ? Loc.T($"Gespeichert: {saved!.X:F2}, {saved.Y:F2}, {saved.Z:F2}\nUmschalt+Klick: entfernen", $"Saved: {saved!.X:F2}, {saved.Y:F2}, {saved.Z:F2}\nShift+click: remove")
+                ? Loc.T($"Gespeichert: {p.X:F2}, {p.Y:F2}, {p.Z:F2}\nUmschalt+Klick: entfernen", $"Saved: {p.X:F2}, {p.Y:F2}, {p.Z:F2}\nShift+click: remove")
                 : string.Empty;
             var action = inZone
-                ? Loc.T("Klick: aktuelle Position + Blickrichtung speichern (Code wird kopiert)", "Click: save current position + facing (code is copied)")
+                ? Loc.T("Klick: aktuelle Position + Blickrichtung in Data/FishingPositions.json speichern", "Click: save current position + facing to Data/FishingPositions.json")
                 : Loc.T("Nur in der Zone des Fischs speicherbar", "Can only be saved in the fish's zone");
             ImGui.SetTooltip(string.IsNullOrEmpty(info) ? action : $"{action}\n{info}");
         }
@@ -756,10 +899,12 @@ public class MainWindow : Window
         if (!clicked)
             return;
 
+        var name = FishingAutomation.FishName(fish);
         if (ImGui.GetIO().KeyShift && hasSaved)
         {
-            config.SavedFishingPositions.Remove(fish.ItemId);
-            config.Save();
+            if (!FishingPositionStore.Remove(fish.ItemId))
+                Plugin.Log.Warning("[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - nur lokal entfernt.");
+            Plugin.Log.Info($"[DevTools] Angel-Position für {name} entfernt.");
             return;
         }
 
@@ -768,12 +913,10 @@ public class MainWindow : Window
 
         var position = player.Position;
         var facing = player.Rotation;
-        config.SavedFishingPositions[fish.ItemId] = SavedFishingPosition.From(position, facing);
-        config.Save();
-
-        var name = FishingAutomation.FishName(fish);
-        ImGui.SetClipboardText(FishingPositionStore.ToCodeLines(fish.ItemId, name, position, facing));
-        Plugin.Log.Info($"[DevTools] Angel-Position für {name} gespeichert: {position}, Blickrichtung {facing:F3} (Code kopiert).");
+        if (FishingPositionStore.Save(fish.ItemId, name, position, facing))
+            Plugin.Log.Info($"[DevTools] Angel-Position für {name} in {FishingPositionStore.SourceFilePath} gespeichert: {position}, Blickrichtung {facing:F3}.");
+        else
+            Plugin.Log.Warning($"[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - Position für {name} nur lokal gespeichert.");
     }
 
     private static void DrawAutoHookPresetCombo(Configuration config, uint itemId, IReadOnlyList<string> presetNames)
@@ -869,6 +1012,9 @@ public class MainWindow : Window
         if (availWidth > aboutIconSize)
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (availWidth - aboutIconSize) * 0.5f);
         ImGui.Image(aboutIcon.Handle, new Vector2(aboutIconSize, aboutIconSize));
+
+        // Etwas Abstand zwischen Icon und Titel/Version, statt direkt am Icon zu kleben.
+        ImGui.Dummy(new Vector2(0f, 8f));
 
         ImGui.SetWindowFontScale(1.2f);
         var nameWidth = ImGui.CalcTextSize(PluginDisplayName).X;

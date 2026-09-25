@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.2.0.0</Version>
+    <Version>0.3.0.0</Version>
     <!-- Manifest-Felder (siehe https://github.com/goatcorp/DalamudPackager) -->
     <Author>Stoni</Author>
     <Name>Big Fish Helper</Name>
@@ -12,5 +12,7 @@
 
   <ItemGroup>
     <None Include="Data\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Angel-Positionen aller Big Fish - wird mit ausgeliefert (siehe FishingPositionStore). -->
+    <None Include="Data\FishingPositions.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
