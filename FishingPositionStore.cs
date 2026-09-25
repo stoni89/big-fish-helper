@@ -1,52 +1,138 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Numerics;
+using System.Text.Json;
 
 namespace BigFishHelper;
 
-public enum FishingPositionSource
-{
-    // Per "Position speichern"-Knopf (nur Dev-Version) gespeichert.
-    Saved,
-    // Fest im Code hinterlegt (BigFishData.FishingPositions).
-    Builtin,
-}
+public readonly record struct FishingPosition(Vector3 Position, float? Facing);
 
-public readonly record struct FishingPosition(Vector3 Position, float? Facing, FishingPositionSource Source);
-
-/// <summary>Gespeicherte Angel-Position (Konfiguration) - Position + Blickrichtung (FFXIV-Rotation).</summary>
+/// <summary>Eine Angel-Position in Data/FishingPositions.json - Position + Blickrichtung (FFXIV-Rotation).</summary>
 [Serializable]
-public class SavedFishingPosition
+public class FishingPositionEntry
 {
+    // Nur zur Lesbarkeit der Datei - maßgeblich ist der Schlüssel (Item-Id).
+    public string Name { get; set; } = string.Empty;
     public float X { get; set; }
     public float Y { get; set; }
     public float Z { get; set; }
     public float? Facing { get; set; }
-
-    public Vector3 ToVector3() => new(X, Y, Z);
-
-    public static SavedFishingPosition From(Vector3 position, float? facing) =>
-        new() { X = position.X, Y = position.Y, Z = position.Z, Facing = facing };
 }
 
 /// <summary>
-/// Liefert die Angel-Position eines Big Fish - Vorrang: per Dev-Knopf gespeichert, dann im Code
-/// hinterlegt. Null = keine Position eingetragen (die Automation überspringt den Fisch).
+/// Angel-Positionen der Big Fish (Key = Item-Id) aus Data/FishingPositions.json - die Datei wird mit
+/// dem Plugin ausgeliefert, damit alle Nutzer dieselben Positionen haben. Der "Position speichern"-
+/// Knopf (nur Dev-Version) schreibt direkt in diese Datei im Projektordner (und in die geladene Kopie),
+/// d.h. gespeicherte Positionen landen mit dem nächsten Commit/Release bei allen.
 /// </summary>
 public static class FishingPositionStore
 {
-    public static FishingPosition? Get(Configuration config, uint itemId)
+    private const string FileName = "FishingPositions.json";
+
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+    private static Dictionary<uint, FishingPositionEntry>? entries;
+
+    private static Dictionary<uint, FishingPositionEntry> Entries => entries ??= Load();
+
+    public static FishingPosition? Get(uint itemId) =>
+        Entries.TryGetValue(itemId, out var entry) ? new FishingPosition(new Vector3(entry.X, entry.Y, entry.Z), entry.Facing) : null;
+
+    /// <summary>
+    /// Grober Mittelpunkt (nur X/Z) des Angelplatzes laut Spieldaten (FishingSpot X/Z sind
+    /// Kartenpixel, per Map-Skalierung in Weltkoordinaten umgerechnet, wie GatherBuddy/Gathering-
+    /// Plugins das für Sammelpunkte machen) - für "Fliege zum Fisch", solange noch keine genaue
+    /// Position gespeichert ist. Die Höhe ist darin nicht enthalten.
+    /// </summary>
+    public static Vector2? GetApproximateSpotCenter(BigFish fish)
     {
-        if (config.SavedFishingPositions.TryGetValue(itemId, out var saved))
-            return new FishingPosition(saved.ToVector3(), saved.Facing, FishingPositionSource.Saved);
+        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
+        if (!spotSheet.TryGetRow(fish.FishingSpotId, out var spot) || spot.TerritoryType.ValueNullable is not { } territory
+            || territory.Map.ValueNullable is not { } map)
+            return null;
 
-        if (BigFishData.FishingPositions.TryGetValue(itemId, out var builtin))
-            return new FishingPosition(builtin, BigFishData.FishingFacings.TryGetValue(itemId, out var facing) ? facing : null, FishingPositionSource.Builtin);
-
-        return null;
+        var x = (spot.X - 1024f) * 100f / map.SizeFactor - map.OffsetX;
+        var z = (spot.Z - 1024f) * 100f / map.SizeFactor - map.OffsetY;
+        return new Vector2(x, z);
     }
 
-    /// <summary>C#-Zeilen zum Übernehmen in BigFishData (Position + Blickrichtung).</summary>
-    public static string ToCodeLines(uint itemId, string fishName, Vector3 position, float facing) =>
-        FormattableString.Invariant(
-            $"[{itemId}] = new Vector3({position.X}f, {position.Y}f, {position.Z}f), // {fishName}\n[{itemId}] = {facing}f, // {fishName} (Blickrichtung)");
+    /// <summary>Nur Dev-Version: Position speichern (Projektdatei + geladene Kopie). false, wenn die Projektdatei nicht gefunden wurde.</summary>
+    public static bool Save(uint itemId, string fishName, Vector3 position, float facing)
+    {
+        Entries[itemId] = new FishingPositionEntry { Name = fishName, X = position.X, Y = position.Y, Z = position.Z, Facing = facing };
+        return Write();
+    }
+
+    /// <summary>Nur Dev-Version: Position entfernen (Projektdatei + geladene Kopie).</summary>
+    public static bool Remove(uint itemId)
+    {
+        Entries.Remove(itemId);
+        return Write();
+    }
+
+    /// <summary>Pfad der Projektdatei (Quellordner des Dev-Plugins) - null, wenn nicht gefunden (z.B. installierte Version).</summary>
+    public static string? SourceFilePath
+    {
+        get
+        {
+            // Dev-Plugin läuft aus <Projekt>/bin/Debug - nach oben bis zur .csproj suchen.
+            var directory = Plugin.PluginInterface.AssemblyLocation.Directory;
+            for (var i = 0; i < 5 && directory != null; i++, directory = directory.Parent)
+            {
+                if (File.Exists(Path.Combine(directory.FullName, "BigFishHelper.csproj")))
+                    return Path.Combine(directory.FullName, "Data", FileName);
+            }
+
+            return null;
+        }
+    }
+
+    private static string OutputFilePath =>
+        Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, "Data", FileName);
+
+    private static Dictionary<uint, FishingPositionEntry> Load()
+    {
+        try
+        {
+            if (!File.Exists(OutputFilePath))
+                return new Dictionary<uint, FishingPositionEntry>();
+
+            var raw = JsonSerializer.Deserialize<Dictionary<string, FishingPositionEntry>>(File.ReadAllText(OutputFilePath), JsonOptions);
+            return raw?
+                .Where(kv => uint.TryParse(kv.Key, out _))
+                .ToDictionary(kv => uint.Parse(kv.Key), kv => kv.Value)
+                ?? new Dictionary<uint, FishingPositionEntry>();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "[FishingPositionStore] Data/FishingPositions.json nicht lesbar.");
+            return new Dictionary<uint, FishingPositionEntry>();
+        }
+    }
+
+    private static bool Write()
+    {
+        var json = JsonSerializer.Serialize(
+            Entries.OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key.ToString(), kv => kv.Value), JsonOptions) + Environment.NewLine;
+
+        var wroteSource = false;
+        try
+        {
+            if (SourceFilePath is { } source)
+            {
+                File.WriteAllText(source, json);
+                wroteSource = true;
+            }
+
+            File.WriteAllText(OutputFilePath, json);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Error(ex, "[FishingPositionStore] Data/FishingPositions.json konnte nicht geschrieben werden.");
+        }
+
+        return wroteSource;
+    }
 }

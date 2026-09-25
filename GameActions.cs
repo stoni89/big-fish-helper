@@ -62,7 +62,67 @@ public static class GameActions
         return telepo != null && telepo->Teleport(aetheryteId, 0);
     }
 
+    /// <summary>Ob in der aktuellen Zone überhaupt aufgesessen werden kann (z.B. in Städten oft nicht).</summary>
+    public static bool CanMountHere()
+    {
+        var territorySheet = Plugin.DataManager.GetExcelSheet<TerritoryType>();
+        return territorySheet != null && territorySheet.TryGetRow(Plugin.ClientState.TerritoryType, out var territory) && territory.Mount;
+    }
+
     public static unsafe bool MountRoulette() => UseGeneralAction(MountRouletteGeneralActionId);
+
+    /// <summary>Ruft das eingestellte Mount (0 = Mount Roulette) - klappt das nicht, Mount Roulette.</summary>
+    public static unsafe bool Mount(uint mountId)
+    {
+        if (mountId == 0)
+            return MountRoulette();
+
+        var actionManager = ActionManager.Instance();
+        if (actionManager != null && actionManager->UseAction(ActionType.Mount, mountId))
+            return true;
+
+        return MountRoulette();
+    }
+
+    /// <summary>Alle freigeschalteten Mounts (RowId, Name in Client-Sprache), alphabetisch - für die Auswahl in den Einstellungen.</summary>
+    public static unsafe (uint Id, string Name)[] GetUnlockedMounts()
+    {
+        var playerState = PlayerState.Instance();
+        if (playerState == null)
+            return System.Array.Empty<(uint, string)>();
+
+        return Plugin.DataManager.GetExcelSheet<Mount>()
+            .Where(m => m.RowId != 0 && !m.Singular.IsEmpty && playerState->IsMountUnlocked(m.RowId))
+            .Select(m => (m.RowId, Name: MountName(m)))
+            .OrderBy(m => m.Name, System.StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public static string MountName(uint mountId) =>
+        Plugin.DataManager.GetExcelSheet<Mount>().TryGetRow(mountId, out var mount) ? MountName(mount) : $"#{mountId}";
+
+    // Lumina liefert "Singular" klein geschrieben (Grammatik-Baustein) - für die Anzeige Wortanfänge groß.
+    private static string MountName(Mount mount)
+    {
+        var chars = mount.Singular.ToString().ToCharArray();
+        var capitalizeNext = true;
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsWhiteSpace(chars[i]) || chars[i] == '-')
+            {
+                capitalizeNext = true;
+                continue;
+            }
+
+            if (capitalizeNext)
+            {
+                chars[i] = char.ToUpperInvariant(chars[i]);
+                capitalizeNext = false;
+            }
+        }
+
+        return new string(chars);
+    }
 
     public static unsafe bool Dismount() => UseGeneralAction(DismountGeneralActionId);
 
@@ -116,5 +176,23 @@ public static class GameActions
     {
         var actionManager = ActionManager.Instance();
         return actionManager != null && actionManager->UseAction(ActionType.Action, CastActionId);
+    }
+
+    /// <summary>Wie viele Stück eines Items aktuell im Inventar liegen - für die Köder-Anzeige in Fish Data.</summary>
+    public static unsafe uint GetInventoryItemCount(uint itemId)
+    {
+        var inventoryManager = InventoryManager.Instance();
+        return inventoryManager == null ? 0 : (uint)inventoryManager->GetInventoryItemCount(itemId);
+    }
+
+    /// <summary>Setzt die Karten-Flagge auf eine Weltposition - für "Fliege zum Fisch" ohne gespeicherte Position (vnavmesh.Query.Mesh.FlagToPoint findet dazu einen erreichbaren Punkt).</summary>
+    public static unsafe void SetMapFlag(uint territoryId, Vector2 worldXZ)
+    {
+        var agentMap = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMap.Instance();
+        var territorySheet = Plugin.DataManager.GetExcelSheet<TerritoryType>();
+        if (agentMap == null || !territorySheet.TryGetRow(territoryId, out var territory))
+            return;
+
+        agentMap->SetFlagMapMarker(territoryId, territory.Map.RowId, new Vector3(worldXZ.X, 0f, worldXZ.Y));
     }
 }
