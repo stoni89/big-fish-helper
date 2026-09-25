@@ -9,6 +9,12 @@ public class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 0;
 
+    // Mount zum Fliegen (Lumina-Mount-RowId) - 0 = Mount Roulette.
+    public uint FlyingMountId { get; set; } = 0;
+
+    // So viele Minuten VOR der Prep Time schon zur Angel-Position fliegen - geangelt wird erst ab der Prep Time.
+    public int TravelLeadMinutes { get; set; } = 2;
+
     // Timer-Seite: bereits gefangene Big Fish ausblenden.
     public bool HideCaughtFish { get; set; } = true;
 
@@ -17,9 +23,6 @@ public class Configuration : IPluginConfiguration
 
     // Pro Big Fish (Item-Id) die eingetragene Zeit in Minuten (0 = aus) - siehe Timer-Seite.
     public Dictionary<uint, int> FishAlertMinutes { get; set; } = new();
-
-    // Pro Big Fish (Item-Id) die per "Position speichern"-Knopf (nur Dev-Version) gespeicherte Angel-Position.
-    public Dictionary<uint, SavedFishingPosition> SavedFishingPositions { get; set; } = new();
 
     // Pro Big Fish (Item-Id) das zugeordnete AutoHook-Preset (Name) - siehe Timer-Seite.
     public Dictionary<uint, string> FishAutoHookPresets { get; set; } = new();

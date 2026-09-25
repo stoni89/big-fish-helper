@@ -8,8 +8,8 @@ using Dalamud.Plugin.Ipc;
 namespace BigFishHelper;
 
 /// <summary>
-/// Ablauf des Big Fish Helper (Play-Seite): wartet, bis für einen der in den Einstellungen
-/// angehakten Big Fish "nächstes Fenster minus Prep Timer" erreicht ist, teleportiert bei Bedarf
+/// Ablauf des Big Fish Helper (Play-Seite): wartet, bis für einen der in den Fischdaten
+/// angehakten Big Fish "Prep Time minus Vorlaufzeit" erreicht ist (Prep Time = Fenster minus Prep Timer), teleportiert bei Bedarf
 /// zum nächsten Ätheriten der Zone, fliegt per vnavmesh zur hinterlegten Angel-Position, wechselt
 /// auf Fischer, wählt in AutoHook das zugeordnete Preset und startet das Angeln. Endet das Fenster
 /// oder ist der Fisch gefangen, wird AutoHook wieder ausgeschaltet und auf den nächsten Fisch gewartet.
@@ -64,20 +64,27 @@ public sealed class FishingAutomation : IDisposable
     private readonly ICallGateSubscriber<bool, object> autoHookSetPluginState;
     private readonly ICallGateSubscriber<string, object> autoHookSetPreset;
     private readonly ICallGateSubscriber<uint, byte, bool> lifestreamTeleport;
+    private readonly ICallGateSubscriber<Vector3?> queryFlagToPoint;
+    private readonly ICallGateSubscriber<Vector3, float, float, Vector3?> queryNearestPointReachable;
 
     private State state = State.Waiting;
     private DateTime stateEnteredAt = DateTime.UtcNow;
     private DateTime lastActionAt = DateTime.MinValue;
     private BigFish? target;
     private FishWindow targetWindow;
+
+    // Ab wann geangelt wird (Prep Time) - vorher wird nur hingeflogen und an der Position gewartet.
+    private DateTime targetFishStartUtc;
     private int pathAttempts;
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
 
-    // Ziel des aktuellen Laufwegs (eingetragene Angel-Position) + Blickrichtung dort.
+    // Ziel des aktuellen Laufwegs (eingetragene Angel-Position, oder - nur bei "Fliege zum Fisch"
+    // ohne gespeicherte Position - der ungefähre Angelplatz) + Blickrichtung dort.
     private Vector3 destination;
     private float? destinationFacing;
+    private bool isApproximate;
 
 
     public bool IsRunning { get; private set; }
@@ -99,6 +106,8 @@ public sealed class FishingAutomation : IDisposable
         autoHookSetPluginState = pi.GetIpcSubscriber<bool, object>("AutoHook.SetPluginState");
         autoHookSetPreset = pi.GetIpcSubscriber<string, object>("AutoHook.SetPreset");
         lifestreamTeleport = pi.GetIpcSubscriber<uint, byte, bool>("Lifestream.Teleport");
+        queryFlagToPoint = pi.GetIpcSubscriber<Vector3?>("vnavmesh.Query.Mesh.FlagToPoint");
+        queryNearestPointReachable = pi.GetIpcSubscriber<Vector3, float, float, Vector3?>("vnavmesh.Query.Mesh.NearestPointReachable");
 
         Plugin.Framework.Update += OnUpdate;
     }
@@ -109,7 +118,7 @@ public sealed class FishingAutomation : IDisposable
         Stop();
     }
 
-    /// <summary>Ob mindestens ein Fisch in den Einstellungen angehakt ist (Voraussetzung für Play/Start).</summary>
+    /// <summary>Ob mindestens ein Fisch in den Fischdaten angehakt ist (Voraussetzung für Play/Start).</summary>
     public bool HasEnabledFish => plugin.Configuration.EnabledFish.Count > 0;
 
     public void Start()
@@ -259,19 +268,32 @@ public sealed class FishingAutomation : IDisposable
     // ---- Warten auf den nächsten Fisch ----
 
     /// <summary>Ob für diesen Fisch eine Angel-Position eingetragen ist (sonst kann die Automation ihn nicht anfliegen).</summary>
-    public bool CanReach(BigFish fish) => FishingPositionStore.Get(plugin.Configuration, fish.ItemId) != null;
+    public bool CanReach(BigFish fish) => FishingPositionStore.Get(fish.ItemId) != null;
 
-    /// <summary>Angehakte, noch nicht gefangene, erreichbare Fische, samt Fenster und Startzeit (Fenster minus Prep Timer).</summary>
-    public (BigFish Fish, FishWindow Window, DateTime TriggerUtc)[] GetPlannedFish(DateTime nowUtc)
+    /// <summary>
+    /// Ob "Fliege zum Fisch" für diesen Fisch möglich ist: mit gespeicherter Position immer, sonst
+    /// nur, wenn sich wenigstens der ungefähre Angelplatz aus den Spieldaten auflösen lässt.
+    /// </summary>
+    public bool CanFlyToFish(BigFish fish) => CanReach(fish) || FishingPositionStore.GetApproximateSpotCenter(fish) != null;
+
+    /// <summary>
+    /// Angehakte, noch nicht gefangene, erreichbare Fische, samt Fenster, Abflugzeit (Prep Time minus
+    /// eingestellter Vorlaufzeit) und Angel-Start (Prep Time = Fenster minus Prep Timer).
+    /// </summary>
+    public (BigFish Fish, FishWindow Window, DateTime TravelUtc, DateTime FishUtc)[] GetPlannedFish(DateTime nowUtc)
     {
         var config = plugin.Configuration;
+        var lead = TimeSpan.FromMinutes(Math.Max(0, config.TravelLeadMinutes));
         return BigFishData.Dawntrail
             .Where(f => config.EnabledFish.Contains(f.ItemId) && CanReach(f) && !FishCatchState.IsCaught(f.ItemId))
             .Select(f => (Fish: f, Window: FishWindows.GetCurrentOrNext(f, nowUtc)))
             .Where(x => x.Window != null)
-            .Select(x => (x.Fish, x.Window!.Value,
-                x.Window.Value.StartUtc - TimeSpan.FromMinutes(config.FishAlertMinutes.GetValueOrDefault(x.Fish.ItemId))))
-            .OrderBy(x => x.Item3)
+            .Select(x =>
+            {
+                var fishUtc = x.Window!.Value.StartUtc - TimeSpan.FromMinutes(config.FishAlertMinutes.GetValueOrDefault(x.Fish.ItemId));
+                return (x.Fish, x.Window.Value, TravelUtc: fishUtc - lead, FishUtc: fishUtc);
+            })
+            .OrderBy(x => x.TravelUtc)
             .ToArray();
     }
 
@@ -286,18 +308,19 @@ public sealed class FishingAutomation : IDisposable
             return;
         }
 
-        var due = planned.Where(p => now >= p.TriggerUtc && now < p.Window.EndUtc).OrderBy(p => p.Window.EndUtc).FirstOrDefault();
+        var due = planned.Where(p => now >= p.TravelUtc && now < p.Window.EndUtc).OrderBy(p => p.Window.EndUtc).FirstOrDefault();
         if (due.Fish == null)
         {
             var next = planned[0];
             StatusText = Loc.T(
-                $"Warte auf {FishName(next.Fish)} - Start in {FormatSpan(next.TriggerUtc - now)}",
-                $"Waiting for {FishName(next.Fish)} - starting in {FormatSpan(next.TriggerUtc - now)}");
+                $"Warte auf {FishName(next.Fish)} - Abflug in {FormatSpan(next.TravelUtc - now)}",
+                $"Waiting for {FishName(next.Fish)} - departure in {FormatSpan(next.TravelUtc - now)}");
             return;
         }
 
         target = due.Fish;
         targetWindow = due.Window;
+        targetFishStartUtc = due.FishUtc;
         pathAttempts = 0;
         Plugin.Log.Info($"[FishingAutomation] Nächster Fisch: {FishName(target)} (Fenster {targetWindow.StartUtc:HH:mm:ss}-{targetWindow.EndUtc:HH:mm:ss} UTC).");
 
@@ -307,23 +330,58 @@ public sealed class FishingAutomation : IDisposable
             PrepareDestination();
     }
 
-    /// <summary>Ziel festlegen (in der richtigen Zone): die eingetragene Angel-Position des Fischs.</summary>
+    /// <summary>
+    /// Ziel festlegen (in der richtigen Zone): die eingetragene Angel-Position des Fischs - oder, nur
+    /// bei "Fliege zum Fisch" ohne gespeicherte Position, der ungefähre Angelplatz aus den Spieldaten
+    /// (wie Gathering-Plugins das für Sammelpunkte anzeigen), damit man die genaue Stelle selbst
+    /// finden und danach mit dem Speichern-Knopf sichern kann.
+    /// </summary>
     private void PrepareDestination()
     {
         pathAttempts = 0;
+        isApproximate = false;
 
-        if (FishingPositionStore.Get(plugin.Configuration, target!.ItemId) is not { } known)
+        if (FishingPositionStore.Get(target!.ItemId) is { } known)
         {
-            var message = Loc.T($"Keine Angel-Position für {FishName(target)} eingetragen.", $"No fishing position set for {FishName(target)}.");
-            if (IsTest)
-                FinishTest(message);
-            else
-                Finish(message);
+            destination = known.Position;
+            destinationFacing = known.Facing;
+            SetState(State.Mounting);
             return;
         }
 
-        destination = known.Position;
-        destinationFacing = known.Facing;
+        if (!IsTest)
+        {
+            // Kann eigentlich nicht passieren - GetPlannedFish liefert nur Fische mit CanReach.
+            Finish(Loc.T($"Keine Angel-Position für {FishName(target)} eingetragen.", $"No fishing position set for {FishName(target)}."));
+            return;
+        }
+
+        if (FishingPositionStore.GetApproximateSpotCenter(target) is not { } center)
+        {
+            FinishTest(Loc.T($"Angelplatz von {FishName(target)} unbekannt.", $"Fishing spot of {FishName(target)} unknown."));
+            return;
+        }
+
+        GameActions.SetMapFlag(target.TerritoryId, center);
+        var approach = queryFlagToPoint.InvokeFunc();
+        if (approach == null)
+        {
+            var playerY = Plugin.ObjectTable.LocalPlayer?.Position.Y ?? 0f;
+            approach = queryNearestPointReachable.InvokeFunc(new Vector3(center.X, playerY, center.Y), 40f, 300f);
+        }
+
+        if (approach == null)
+        {
+            FinishTest(Loc.T(
+                $"Kein erreichbarer Punkt am Angelplatz von {FishName(target)} gefunden.",
+                $"No reachable point found at the fishing spot of {FishName(target)}."));
+            return;
+        }
+
+        isApproximate = true;
+        destination = approach.Value;
+        destinationFacing = null;
+        Plugin.Log.Info($"[FishingAutomation] Keine Angel-Position für {FishName(target)} gespeichert - fliege ungefähr zu {destination}.");
         SetState(State.Mounting);
     }
 
@@ -336,7 +394,8 @@ public sealed class FishingAutomation : IDisposable
         if (Plugin.Condition[ConditionFlag.Casting] || now - lastActionAt < TeleportRetryInterval)
             return;
 
-        var reference = FishingPositionStore.Get(plugin.Configuration, target!.ItemId)?.Position ?? Vector3.Zero;
+        var reference = FishingPositionStore.Get(target!.ItemId)?.Position
+                        ?? (IsTest && FishingPositionStore.GetApproximateSpotCenter(target) is { } c ? new Vector3(c.X, 0f, c.Y) : Vector3.Zero);
         var aetheryte = GameActions.FindNearestAetheryte(target.TerritoryId, reference);
         if (aetheryte == null)
         {
@@ -387,13 +446,21 @@ public sealed class FishingAutomation : IDisposable
 
     private void UpdateMounting(DateTime now)
     {
-        StatusText = Loc.T("Steige auf...", "Mounting...");
-
         if (Plugin.Condition[ConditionFlag.Mounted] || IsNear(ArrivedDistance))
         {
             BeginPath();
             return;
         }
+
+        // In Städten/Zonen ohne Aufsitzen (z.B. manche Innenräume) erst gar nicht versuchen - direkt zu Fuß.
+        if (!GameActions.CanMountHere())
+        {
+            StatusText = Loc.T($"Laufe zu {FishName(target!)}...", $"Walking to {FishName(target!)}...");
+            BeginPath();
+            return;
+        }
+
+        StatusText = Loc.T("Steige auf...", "Mounting...");
 
         if (now - stateEnteredAt > MountTimeout)
         {
@@ -405,7 +472,7 @@ public sealed class FishingAutomation : IDisposable
         if (now - lastActionAt > MountRetryInterval && !Plugin.Condition[ConditionFlag.Casting])
         {
             lastActionAt = now;
-            GameActions.MountRoulette();
+            GameActions.Mount(plugin.Configuration.FlyingMountId);
         }
     }
 
@@ -432,7 +499,9 @@ public sealed class FishingAutomation : IDisposable
 
     private void UpdateFlying(DateTime now)
     {
-        StatusText = Loc.T($"Fliege zu {FishName(target!)}...", $"Flying to {FishName(target!)}...");
+        StatusText = Plugin.Condition[ConditionFlag.Mounted]
+            ? Loc.T($"Fliege zu {FishName(target!)}...", $"Flying to {FishName(target!)}...")
+            : Loc.T($"Laufe zu {FishName(target!)}...", $"Walking to {FishName(target!)}...");
 
         var running = pathIsRunning.InvokeFunc() || pathfindInProgress.InvokeFunc();
         if (running)
@@ -487,7 +556,8 @@ public sealed class FishingAutomation : IDisposable
             return;
 
         // Noch nicht exakt auf der Angel-Position - das letzte Stück zu Fuß genau draufstellen.
-        if (!IsNear(ExactPositionTolerance))
+        // Beim ungefähren Angelplatz (keine gespeicherte Position) gibt es keinen exakten Punkt.
+        if (!isApproximate && !IsNear(ExactPositionTolerance))
         {
             SetState(State.ExactPositioning);
             return;
@@ -555,7 +625,11 @@ public sealed class FishingAutomation : IDisposable
         if (IsTest)
         {
             FaceWater();
-            FinishTest(Loc.T($"An der Angel-Position von {FishName(target!)} angekommen.", $"Arrived at the fishing position of {FishName(target!)}."));
+            FinishTest(isApproximate
+                ? Loc.T(
+                    $"In der Nähe von {FishName(target!)} (keine Position gespeichert - jetzt die genaue Stelle finden und speichern).",
+                    $"Near {FishName(target!)} (no position saved yet - find the exact spot now and save it).")
+                : Loc.T($"An der Angel-Position von {FishName(target!)} angekommen.", $"Arrived at the fishing position of {FishName(target!)}."));
             return;
         }
 
@@ -614,6 +688,15 @@ public sealed class FishingAutomation : IDisposable
 
         if (now - lastActionAt < FaceSettleDelay)
             return;
+
+        // Zu früh da (Vorlaufzeit) - an der Angel-Position warten, geangelt wird erst ab der Prep Time.
+        if (now < targetFishStartUtc)
+        {
+            StatusText = Loc.T(
+                $"An der Angel-Position von {FishName(target!)} - Angeln startet in {FormatSpan(targetFishStartUtc - now)}",
+                $"At the fishing position of {FishName(target!)} - fishing starts in {FormatSpan(targetFishStartUtc - now)}");
+            return;
+        }
 
         StatusText = Loc.T("Starte AutoHook...", "Starting AutoHook...");
 
