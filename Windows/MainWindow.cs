@@ -439,7 +439,7 @@ public class MainWindow : Window
         // Angehakte Fische in Startreihenfolge.
         var now = DateTime.UtcNow;
         var config = plugin.Configuration;
-        var enabled = BigFishData.Dawntrail.Where(f => config.EnabledFish.Contains(f.ItemId)).ToList();
+        var enabled = BigFishData.All.Where(f => config.EnabledFish.Contains(f.ItemId)).ToList();
         if (enabled.Count == 0)
         {
             ImGui.TextColored(ModernUi.TextMuted, NoFishSelectedText);
@@ -627,16 +627,33 @@ public class MainWindow : Window
     /// Fischdaten: alle Big Fish (bisher Dawntrail) mit Auswahl, Gefangen-Status, nächstem Fenster,
     /// Dauer, Prep Timer, AutoHook-Preset und "Fliege zum Fisch".
     /// </summary>
+    private static string GetExpansionLabel(BigFishExpansion expansion) => expansion switch
+    {
+        BigFishExpansion.ARealmReborn => "A Realm Reborn",
+        BigFishExpansion.Heavensward => "Heavensward",
+        BigFishExpansion.Stormblood => "Stormblood",
+        BigFishExpansion.Shadowbringers => "Shadowbringers",
+        BigFishExpansion.Endwalker => "Endwalker",
+        BigFishExpansion.Dawntrail => "Dawntrail",
+        _ => expansion.ToString(),
+    };
+
     private void DrawFishDataPage()
     {
         var config = plugin.Configuration;
         ModernUi.SectionHeader(
             Loc.T("Fischdaten", "Fish Data"),
-            Loc.T("Big Fish aus Dawntrail und wann sie das nächste Mal beißen.", "Dawntrail Big Fish and when they bite next."));
+            Loc.T("Big Fish nach Addon und wann sie das nächste Mal beißen.", "Big Fish by expansion and when they bite next."));
 
-        var itemSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
-        string FishDisplayName(BigFish f) => itemSheet.TryGetRow(f.ItemId, out var it) ? it.Name.ToString() : $"#{f.ItemId}";
+        // Einmal gefangen bleibt das dauerhaft so (Fischer-Logbuch-Flag, siehe FishCatchState) - der
+        // Haken "diesen Fisch machen" soll dann nicht weiter gesetzt bleiben (Nutzeranforderung).
+        var caughtAndEnabled = config.EnabledFish.Where(FishCatchState.IsCaught).ToList();
+        if (caughtAndEnabled.Count > 0)
+        {
+            foreach (var id in caughtAndEnabled)
+                config.EnabledFish.Remove(id);
+            config.Save();
+        }
 
         var hideCaught = config.HideCaughtFish;
         ModernUi.BeginCard();
@@ -647,6 +664,29 @@ public class MainWindow : Window
         }
         ModernUi.EndCard();
 
+        if (!ImGui.BeginTabBar("##FishDataExpansions"))
+            return;
+
+        foreach (var (expansion, fish) in BigFishData.ByExpansion)
+        {
+            var remaining = fish.Count(f => !FishCatchState.IsCaught(f.ItemId));
+            if (!ImGui.BeginTabItem($"{GetExpansionLabel(expansion)} ({remaining})##tab_{expansion}"))
+                continue;
+
+            DrawFishTable(fish, config, hideCaught);
+            ImGui.EndTabItem();
+        }
+
+        ImGui.EndTabBar();
+    }
+
+    /// <summary>Die Fischtabelle EINES Addons (siehe DrawFishDataPage) - Auswahl, Gefangen-Status, nächstes Fenster, Dauer, Prep Timer, AutoHook-Preset, "Fliege zum Fisch".</summary>
+    private void DrawFishTable(BigFish[] fishList, Configuration config, bool hideCaught)
+    {
+        var itemSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
+        string FishDisplayName(BigFish f) => itemSheet.TryGetRow(f.ItemId, out var it) ? it.Name.ToString() : $"#{f.ItemId}";
+
         var now = DateTime.UtcNow;
 
         // Die Suche wirkt sich nur aus, solange sie aufgeklappt ist (siehe DrawFishSearchToggle) -
@@ -654,7 +694,7 @@ public class MainWindow : Window
         // verlieren (er steht beim erneuten Aufklappen wieder da).
         var effectiveSearch = fishSearchExpanded ? fishSearchFilter : string.Empty;
 
-        var rows = BigFishData.Dawntrail
+        var rows = fishList
             .Select(fish => (Fish: fish, Caught: FishCatchState.IsCaught(fish.ItemId), Window: FishWindows.GetCurrentOrNext(fish, now)))
             .Where(r => !hideCaught || !r.Caught)
             .Where(r => string.IsNullOrWhiteSpace(effectiveSearch) || FishDisplayName(r.Fish).Contains(effectiveSearch, StringComparison.OrdinalIgnoreCase))
@@ -1301,12 +1341,13 @@ public class MainWindow : Window
         if (avail > buttonSize.X)
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (avail - buttonSize.X) * 0.5f);
 
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.14f, 0.16f, 0.18f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.20f, 0.22f, 0.25f, 1f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.10f, 0.11f, 0.13f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.55f, 0.3f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.26f, 0.64f, 0.36f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.16f, 0.46f, 0.24f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Text, Vector4.One);
         if (IconTextButton("AboutGitHub", FontAwesomeIcon.CodeBranch, githubText, buttonSize))
             Util.OpenLink(GitHubUrl);
-        ImGui.PopStyleColor(3);
+        ImGui.PopStyleColor(4);
     }
 
     // ---- Plugins ----
