@@ -26,19 +26,36 @@ public class FishingPositionEntry
 /// dem Plugin ausgeliefert, damit alle Nutzer dieselben Positionen haben. Der "Position speichern"-
 /// Knopf (nur Dev-Version) schreibt direkt in diese Datei im Projektordner (und in die geladene Kopie),
 /// d.h. gespeicherte Positionen landen mit dem nächsten Commit/Release bei allen.
+///
+/// Pro Fisch sind MEHRERE Spots möglich (Nutzeranforderung: nicht immer an derselben Stelle angeln) -
+/// Get() wählt bei jedem Aufruf zufällig einen davon aus. Die Automation ruft Get() bewusst nur EINMAL
+/// pro Trip auf und hält das Ergebnis fest (siehe FishingAutomation.targetPosition), damit während
+/// desselben Trips nicht versehentlich mehrere unterschiedliche Spots gemischt werden.
 /// </summary>
 public static class FishingPositionStore
 {
     private const string FileName = "FishingPositions.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly Random Random = new();
 
-    private static Dictionary<uint, FishingPositionEntry>? entries;
+    private static Dictionary<uint, List<FishingPositionEntry>>? entries;
 
-    private static Dictionary<uint, FishingPositionEntry> Entries => entries ??= Load();
+    private static Dictionary<uint, List<FishingPositionEntry>> Entries => entries ??= Load();
 
-    public static FishingPosition? Get(uint itemId) =>
-        Entries.TryGetValue(itemId, out var entry) ? new FishingPosition(new Vector3(entry.X, entry.Y, entry.Z), entry.Facing) : null;
+    /// <summary>Zufällig ausgewählter Spot dieses Fischs - null, wenn keiner eingetragen ist.</summary>
+    public static FishingPosition? Get(uint itemId)
+    {
+        if (!Entries.TryGetValue(itemId, out var list) || list.Count == 0)
+            return null;
+
+        var entry = list[Random.Next(list.Count)];
+        return new FishingPosition(new Vector3(entry.X, entry.Y, entry.Z), entry.Facing);
+    }
+
+    /// <summary>Alle eingetragenen Spots dieses Fischs (Dev-Version: Liste + Löschen einzelner Spots).</summary>
+    public static IReadOnlyList<FishingPositionEntry> GetAll(uint itemId) =>
+        Entries.TryGetValue(itemId, out var list) ? list : Array.Empty<FishingPositionEntry>();
 
     /// <summary>
     /// Grober Mittelpunkt (nur X/Z) des Angelplatzes laut Spieldaten (FishingSpot X/Z sind
@@ -58,17 +75,26 @@ public static class FishingPositionStore
         return new Vector2(x, z);
     }
 
-    /// <summary>Nur Dev-Version: Position speichern (Projektdatei + geladene Kopie). false, wenn die Projektdatei nicht gefunden wurde.</summary>
-    public static bool Save(uint itemId, string fishName, Vector3 position, float facing)
+    /// <summary>Nur Dev-Version: einen weiteren Spot hinzufügen (Projektdatei + geladene Kopie). false, wenn die Projektdatei nicht gefunden wurde.</summary>
+    public static bool Add(uint itemId, string fishName, Vector3 position, float facing)
     {
-        Entries[itemId] = new FishingPositionEntry { Name = fishName, X = position.X, Y = position.Y, Z = position.Z, Facing = facing };
+        if (!Entries.TryGetValue(itemId, out var list))
+            Entries[itemId] = list = new List<FishingPositionEntry>();
+
+        list.Add(new FishingPositionEntry { Name = fishName, X = position.X, Y = position.Y, Z = position.Z, Facing = facing });
         return Write();
     }
 
-    /// <summary>Nur Dev-Version: Position entfernen (Projektdatei + geladene Kopie).</summary>
-    public static bool Remove(uint itemId)
+    /// <summary>Nur Dev-Version: einen einzelnen Spot entfernen (Projektdatei + geladene Kopie).</summary>
+    public static bool RemoveAt(uint itemId, int index)
     {
-        Entries.Remove(itemId);
+        if (!Entries.TryGetValue(itemId, out var list) || index < 0 || index >= list.Count)
+            return false;
+
+        list.RemoveAt(index);
+        if (list.Count == 0)
+            Entries.Remove(itemId);
+
         return Write();
     }
 
@@ -92,23 +118,23 @@ public static class FishingPositionStore
     private static string OutputFilePath =>
         Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, "Data", FileName);
 
-    private static Dictionary<uint, FishingPositionEntry> Load()
+    private static Dictionary<uint, List<FishingPositionEntry>> Load()
     {
         try
         {
             if (!File.Exists(OutputFilePath))
-                return new Dictionary<uint, FishingPositionEntry>();
+                return new Dictionary<uint, List<FishingPositionEntry>>();
 
-            var raw = JsonSerializer.Deserialize<Dictionary<string, FishingPositionEntry>>(File.ReadAllText(OutputFilePath), JsonOptions);
+            var raw = JsonSerializer.Deserialize<Dictionary<string, List<FishingPositionEntry>>>(File.ReadAllText(OutputFilePath), JsonOptions);
             return raw?
                 .Where(kv => uint.TryParse(kv.Key, out _))
                 .ToDictionary(kv => uint.Parse(kv.Key), kv => kv.Value)
-                ?? new Dictionary<uint, FishingPositionEntry>();
+                ?? new Dictionary<uint, List<FishingPositionEntry>>();
         }
         catch (Exception ex)
         {
             Plugin.Log.Error(ex, "[FishingPositionStore] Data/FishingPositions.json nicht lesbar.");
-            return new Dictionary<uint, FishingPositionEntry>();
+            return new Dictionary<uint, List<FishingPositionEntry>>();
         }
     }
 
