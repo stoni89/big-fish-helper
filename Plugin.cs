@@ -30,6 +30,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private MainWindow MainWindow { get; }
 
+    public StatusOverlayWindow StatusOverlayWindow { get; }
+
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -37,6 +39,9 @@ public sealed class Plugin : IDalamudPlugin
         Automation = new FishingAutomation(this);
         MainWindow = new MainWindow(this);
         WindowSystem.AddWindow(MainWindow);
+
+        StatusOverlayWindow = new StatusOverlayWindow(this);
+        WindowSystem.AddWindow(StatusOverlayWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -62,6 +67,7 @@ public sealed class Plugin : IDalamudPlugin
 
         WindowSystem.RemoveAllWindows();
         MainWindow.Dispose();
+        StatusOverlayWindow.Dispose();
         Automation.Dispose();
         CommandManager.RemoveHandler(CommandName);
     }
