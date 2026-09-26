@@ -388,10 +388,11 @@ public class MainWindow : Window
         ImGui.Indent(ModernUi.CardMargin);
 
         var red = new Vector4(0.85f, 0.3f, 0.35f, 1f);
-        ImGui.PushStyleColor(ImGuiCol.Button, running ? red : ModernUi.Accent);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, running ? new Vector4(0.92f, 0.38f, 0.42f, 1f) : ModernUi.AccentHover);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, running ? red : ModernUi.Accent);
-        ImGui.PushStyleColor(ImGuiCol.Text, running ? Vector4.One : ModernUi.TextOnAccent);
+        var green = new Vector4(0.3f, 0.75f, 0.35f, 1f);
+        ImGui.PushStyleColor(ImGuiCol.Button, running ? red : green);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, running ? new Vector4(0.92f, 0.38f, 0.42f, 1f) : new Vector4(0.36f, 0.82f, 0.42f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, running ? red : green);
+        ImGui.PushStyleColor(ImGuiCol.Text, Vector4.One);
         if (disabled)
             ImGui.BeginDisabled();
         var clicked = IconTextButton("PlayStartStop", running ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play,
@@ -436,6 +437,7 @@ public class MainWindow : Window
         }
 
         var planned = automation.GetPlannedFish(now);
+        var itemSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
         ModernUi.GroupLabel(Loc.T("Geplante Fische", "Planned fish"));
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX;
         if (ImGui.BeginTable("##PlannedFish", 5, tableFlags))
@@ -443,9 +445,9 @@ public class MainWindow : Window
             ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
             ImGui.TableSetupColumn("##Departure", ImGuiTableColumnFlags.WidthFixed, 140f);
             ImGui.TableSetupColumn("##FishingStart", ImGuiTableColumnFlags.WidthFixed, 140f);
-            ImGui.TableSetupColumn("##Position", ImGuiTableColumnFlags.WidthFixed, 110f);
-            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 200f);
-            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("ABFLUG", "DEPARTURE")), (2, Loc.T("ANGELN AB", "FISHING FROM")), (3, Loc.T("POSITION", "POSITION")), (4, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 4);
+            ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthFixed, 90f);
+            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 260f);
+            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("ABFLUG", "DEPARTURE")), (2, Loc.T("ANGELN AB", "FISHING FROM")), (3, Loc.T("KÖDER", "BAIT")), (4, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 4);
 
             foreach (var (fish, window, travel, fishStart) in planned)
             {
@@ -472,13 +474,9 @@ public class MainWindow : Window
                 else
                     ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(fishStart - now)}", $"in {FormatCountdown(fishStart - now)}"));
 
-                // Ob für den Fisch eine Angel-Position eingetragen ist.
+                // Benötigter Köder als Icon + Anzahl im Inventar (siehe DrawBaitIcons).
                 ImGui.TableNextColumn();
-                ImGui.AlignTextToFramePadding();
-                if (FishingPositionStore.Get(fish.ItemId) != null)
-                    ImGui.TextColored(CaughtColor, Loc.T("Hinterlegt", "Set"));
-                else
-                    ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
+                DrawBaitIcons(fish, itemSheet);
 
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
@@ -501,7 +499,7 @@ public class MainWindow : Window
                 ImGui.TableNextColumn();
                 ImGui.TextColored(ModernUi.TextMuted, "-");
                 ImGui.TableNextColumn();
-                ImGui.TextColored(NotCaughtColor, Loc.T("Keine Position", "No position"));
+                DrawBaitIcons(fish, itemSheet);
                 ImGui.TableNextColumn();
             }
 
