@@ -50,6 +50,10 @@ public sealed class FishingAutomation : IDisposable
     private static readonly TimeSpan ExactPositioningTimeout = TimeSpan.FromSeconds(10);
     private const float ArrivedDistance = 2f;
     private const int MaxPathAttempts = 3;
+    // Ab dieser Abweichung gilt das exakte Draufstellen als gescheitert (z.B. Mesh-Lücke direkt an
+    // der Angel-Position) statt als übliche kleine Navmesh-Ungenauigkeit - siehe UpdateExactPositioning.
+    private const float ExactPositionFallbackDistance = 3f;
+    private const int MaxExactPositionAttempts = 2;
 
     private readonly Plugin plugin;
 
@@ -76,6 +80,7 @@ public sealed class FishingAutomation : IDisposable
     // Ab wann geangelt wird (Prep Time) - vorher wird nur hingeflogen und an der Position gewartet.
     private DateTime targetFishStartUtc;
     private int pathAttempts;
+    private int exactPositionAttempts;
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
@@ -85,6 +90,11 @@ public sealed class FishingAutomation : IDisposable
     private Vector3 destination;
     private float? destinationFacing;
     private bool isApproximate;
+
+    // Ob für diesen Trip schon einmal auf eine erreichbare Ausweichposition zurückgefallen wurde
+    // (siehe TryFallbackLanding) - höchstens einmal pro Trip, sonst bricht die Automation danach
+    // wirklich ab, statt endlos zwischen unerreichbaren Positionen zu pendeln.
+    private bool usedFallbackLanding;
 
     // Einmal pro Trip zufällig ausgewählte Angel-Position (siehe FishingPositionStore.Get - ein
     // Fisch kann mehrere Spots haben, damit nicht immer an derselben Stelle geangelt wird). Wird BEI
@@ -160,6 +170,7 @@ public sealed class FishingAutomation : IDisposable
         targetPosition = FishingPositionStore.Get(fish.ItemId);
         targetWindow = new FishWindow(DateTime.UtcNow, DateTime.MaxValue);
         pathAttempts = 0;
+        usedFallbackLanding = false;
         StatusText = Loc.T($"Fliege zu {FishName(fish)}...", $"Flying to {FishName(fish)}...");
         Plugin.Log.Info($"[FishingAutomation] Fliege zum Fisch: {FishName(fish)}.");
 
@@ -332,6 +343,7 @@ public sealed class FishingAutomation : IDisposable
         targetWindow = due.Window;
         targetFishStartUtc = due.FishUtc;
         pathAttempts = 0;
+        usedFallbackLanding = false;
         Plugin.Log.Info($"[FishingAutomation] Nächster Fisch: {FishName(target)} (Fenster {targetWindow.StartUtc:HH:mm:ss}-{targetWindow.EndUtc:HH:mm:ss} UTC).");
 
         if (Plugin.ClientState.TerritoryType != target.TerritoryId)
@@ -542,8 +554,50 @@ public sealed class FishingAutomation : IDisposable
             return;
         }
 
-        StatusText = Loc.T($"{reason} - gestoppt.", $"{reason} - stopped.");
-        Stop();
+        // Nach mehreren erfolglosen Versuchen die exakte Angel-Position anzufliegen (siehe
+        // Nutzer-Report "Great Ball of Lightning") - statt komplett abzubrechen, auf eine
+        // tatsächlich erreichbare Position in der Nähe ausweichen (siehe TryFallbackLanding).
+        TryFallbackLanding(reason);
+    }
+
+    // Umkreis/Suchradius für TryFallbackLanding - klein genug, um noch "in der Nähe" des
+    // eigentlichen Angelplatzes zu sein, aber groß genug, um z.B. Wasser/eine Mesh-Lücke zu umgehen.
+    private const float FallbackSearchRadius = 10f;
+    private const float FallbackMaxDistance = 60f;
+
+    /// <summary>
+    /// Wird aufgerufen, wenn die eingetragene Angel-Position nicht erreicht werden kann (z.B. über
+    /// Wasser oder an einer Mesh-Lücke, siehe Nutzer-Report "Great Ball of Lightning") - sucht per
+    /// vnavmesh den nächsten TATSÄCHLICH begehbaren Punkt in der Nähe, fliegt/läuft stattdessen
+    /// dorthin und läuft von da aus so nah wie möglich weiter (wie beim ungefähren Angelplatz ohne
+    /// gespeicherte Position, siehe isApproximate) - damit die Automation auf JEDEN FALL irgendwo in
+    /// der Nähe landet, statt endlos an derselben unerreichbaren Stelle zu scheitern. Nur EIN
+    /// Fallback-Versuch pro Trip (usedFallbackLanding), sonst bricht sie danach wirklich ab.
+    /// </summary>
+    private void TryFallbackLanding(string reason)
+    {
+        if (usedFallbackLanding)
+        {
+            StatusText = Loc.T($"{reason} - auch Ausweichposition nicht erreichbar - gestoppt.", $"{reason} - fallback position also unreachable - stopped.");
+            Stop();
+            return;
+        }
+
+        var fallback = queryNearestPointReachable.InvokeFunc(destination, FallbackSearchRadius, FallbackMaxDistance);
+        if (fallback == null)
+        {
+            StatusText = Loc.T($"{reason} - gestoppt.", $"{reason} - stopped.");
+            Stop();
+            return;
+        }
+
+        Plugin.Log.Info($"[FishingAutomation] {reason} - weiche auf erreichbare Position {fallback.Value} in der Nähe von {destination} aus.");
+        usedFallbackLanding = true;
+        destination = fallback.Value;
+        destinationFacing = null;
+        isApproximate = true;
+        pathAttempts = 0;
+        SetState(State.Mounting);
     }
 
     private void UpdateLanding(DateTime now)
@@ -569,6 +623,7 @@ public sealed class FishingAutomation : IDisposable
         // Beim ungefähren Angelplatz (keine gespeicherte Position) gibt es keinen exakten Punkt.
         if (!isApproximate && !IsNear(ExactPositionTolerance))
         {
+            exactPositionAttempts = 0;
             SetState(State.ExactPositioning);
             return;
         }
@@ -608,8 +663,29 @@ public sealed class FishingAutomation : IDisposable
         StopPath();
         RestorePathTolerance();
         var player = Plugin.ObjectTable.LocalPlayer;
-        if (player != null)
-            Plugin.Log.Info($"[FishingAutomation] Angel-Position erreicht (Abweichung {Vector3.Distance(player.Position, destination):F2}).");
+        var reachedDistance = player != null ? Vector3.Distance(player.Position, destination) : float.MaxValue;
+
+        // Tatsächlich nicht nah genug rangekommen (z.B. Mesh-Lücke direkt an der Angel-Position,
+        // siehe Nutzer-Report "Great Ball of Lightning") - statt einfach von der falschen Stelle aus
+        // zu fischen, erst noch einmal neu versuchen, danach auf eine erreichbare Position in der
+        // Nähe ausweichen (siehe TryFallbackLanding).
+        if (reachedDistance > ExactPositionFallbackDistance)
+        {
+            exactPositionAttempts++;
+            if (exactPositionAttempts < MaxExactPositionAttempts)
+            {
+                Plugin.Log.Info($"[FishingAutomation] Angel-Position nicht nah genug erreicht (Abweichung {reachedDistance:F2}) - neuer Versuch.");
+                lastActionAt = DateTime.MinValue;
+                stateEnteredAt = now;
+                return;
+            }
+
+            Plugin.Log.Info($"[FishingAutomation] Angel-Position nicht exakt erreichbar (Abweichung {reachedDistance:F2}).");
+            TryFallbackLanding(Loc.T("Angel-Position nicht exakt erreichbar", "Fishing position not exactly reachable"));
+            return;
+        }
+
+        Plugin.Log.Info($"[FishingAutomation] Angel-Position erreicht (Abweichung {reachedDistance:F2}).");
         ArrivedAtFishingPosition();
     }
 
