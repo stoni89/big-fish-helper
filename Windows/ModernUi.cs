@@ -49,6 +49,7 @@ public static class ModernUi
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 8f);
         ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 8f);
         ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarRounding, 8f);
+        ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 8f);
         // Standardmäßig ein schmaler "Griff", der auf der Schiene schwimmt - das ließ Slider neben
         // den (voll ausgefüllten) Dropdown-Boxen kleiner/dünner wirken, obwohl die Box selbst exakt
         // gleich hoch ist (beide nutzen dasselbe FramePadding). Ein breiterer Griff gleicht das an.
@@ -75,12 +76,20 @@ public static class ModernUi
         ImGui.PushStyleColor(ImGuiCol.PopupBg, new Vector4(0.10f, 0.16f, 0.25f, 0.98f));
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1f, 1f, 1f, 0.05f));
         ImGui.PushStyleColor(ImGuiCol.Separator, new Vector4(1f, 1f, 1f, 0.08f));
+
+        // Tabs (siehe z.B. Fischdaten-Seite: ein Tab pro Addon) - sonst der Standard-ImGui-Look
+        // (helles Grau/eckig), passt farblich nicht zum Rest (dunkles Blau, abgerundet, Akzentfarbe).
+        ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(0f, 0f, 0f, 0f));
+        ImGui.PushStyleColor(ImGuiCol.TabHovered, SidebarHover);
+        ImGui.PushStyleColor(ImGuiCol.TabActive, SidebarSelected);
+        ImGui.PushStyleColor(ImGuiCol.TabUnfocused, new Vector4(0f, 0f, 0f, 0f));
+        ImGui.PushStyleColor(ImGuiCol.TabUnfocusedActive, SidebarSelected);
     }
 
     public static void PopStyle()
     {
-        ImGui.PopStyleColor(13);
-        ImGui.PopStyleVar(8);
+        ImGui.PopStyleColor(18);
+        ImGui.PopStyleVar(9);
     }
 
     /// <summary>
