@@ -304,7 +304,7 @@ public sealed class FishingAutomation : IDisposable
     public (BigFish Fish, FishWindow Window, DateTime FishUtc)[] GetPlannedFish(DateTime nowUtc)
     {
         var config = plugin.Configuration;
-        return BigFishData.Dawntrail
+        return BigFishData.All
             .Where(f => config.EnabledFish.Contains(f.ItemId) && CanReach(f) && !FishCatchState.IsCaught(f.ItemId))
             .Select(f => (Fish: f, Window: FishWindows.GetCurrentOrNext(f, nowUtc)))
             .Where(x => x.Window != null)
