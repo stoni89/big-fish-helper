@@ -12,8 +12,8 @@ public class Configuration : IPluginConfiguration
     // Mount zum Fliegen (Lumina-Mount-RowId) - 0 = Mount Roulette.
     public uint FlyingMountId { get; set; } = 0;
 
-    // So viele Minuten VOR der Prep Time schon zur Angel-Position fliegen - geangelt wird erst ab der Prep Time.
-    public int TravelLeadMinutes { get; set; } = 2;
+    // Öffnet beim Klick auf "Start" automatisch das kleine Status-Overlay (siehe StatusOverlayWindow).
+    public bool ShowOverlayOnStart { get; set; } = false;
 
     // Timer-Seite: bereits gefangene Big Fish ausblenden.
     public bool HideCaughtFish { get; set; } = true;

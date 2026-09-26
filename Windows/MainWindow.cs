@@ -35,7 +35,7 @@ public class MainWindow : Window
     private readonly Plugin plugin;
     private static readonly string VersionText = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?";
 
-    private static readonly string IconPath =
+    public static readonly string IconPath =
         Path.Combine(Plugin.PluginInterface.AssemblyLocation.DirectoryName!, "Data", "icon.png");
 
     private RailPage railPage = RailPage.FishData;
@@ -397,6 +397,12 @@ public class MainWindow : Window
             ImGui.BeginDisabled();
         var clicked = IconTextButton("PlayStartStop", running ? FontAwesomeIcon.Stop : FontAwesomeIcon.Play,
             running ? Loc.T("Stop", "Stop") : Loc.T("Start", "Start"), new Vector2(buttonWidth, 44f));
+
+        // "Läuft"-Anzeige: heller Schimmer, der über den (roten) Stop-Knopf von links nach rechts
+        // läuft, in Dauerschleife.
+        if (running)
+            DrawShimmer(ImGui.GetItemRectMin(), ImGui.GetItemRectMax());
+
         if (disabled)
             ImGui.EndDisabled();
         ImGui.PopStyleColor(4);
@@ -411,7 +417,11 @@ public class MainWindow : Window
             if (running)
                 automation.Stop();
             else
+            {
                 automation.Start();
+                if (plugin.Configuration.ShowOverlayOnStart)
+                    plugin.StatusOverlayWindow.IsOpen = true;
+            }
         }
 
         ImGui.Unindent(ModernUi.CardMargin);
@@ -443,26 +453,18 @@ public class MainWindow : Window
         if (ImGui.BeginTable("##PlannedFish", 5, tableFlags))
         {
             ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
-            ImGui.TableSetupColumn("##Departure", ImGuiTableColumnFlags.WidthFixed, 140f);
             ImGui.TableSetupColumn("##FishingStart", ImGuiTableColumnFlags.WidthFixed, 140f);
+            ImGui.TableSetupColumn("##Active", ImGuiTableColumnFlags.WidthFixed, 140f);
             ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthFixed, 90f);
             ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 260f);
-            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("ABFLUG", "DEPARTURE")), (2, Loc.T("ANGELN AB", "FISHING FROM")), (3, Loc.T("KÖDER", "BAIT")), (4, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 4);
+            DrawTableHeader(new[] { (0, Loc.T("FISCH", "FISH")), (1, Loc.T("PREP TIMER", "PREP TIMER")), (2, Loc.T("AKTIV", "ACTIVE")), (3, Loc.T("KÖDER", "BAIT")), (4, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 4);
 
-            foreach (var (fish, window, travel, fishStart) in planned)
+            foreach (var (fish, window, fishStart) in planned)
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
                 ImGui.TextUnformatted(FishingAutomation.FishName(fish));
-
-                // Abflug (Prep Time minus Vorlaufzeit).
-                ImGui.TableNextColumn();
-                ImGui.AlignTextToFramePadding();
-                if (now >= travel)
-                    ImGui.TextColored(CaughtColor, Loc.T("Jetzt", "Now"));
-                else
-                    ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(travel - now)}", $"in {FormatCountdown(travel - now)}"));
 
                 // Angel-Start (Prep Time) bzw. aktives Fenster.
                 ImGui.TableNextColumn();
@@ -473,6 +475,15 @@ public class MainWindow : Window
                     ImGui.TextColored(CaughtColor, Loc.T("Jetzt (Vorbereitung)", "Now (prep)"));
                 else
                     ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(fishStart - now)}", $"in {FormatCountdown(fishStart - now)}"));
+
+                // Timer, wann der Fisch tatsächlich aktiv (beißt) ist: Restdauer, solange das
+                // Fenster gerade läuft, sonst Countdown bis zum Start.
+                ImGui.TableNextColumn();
+                ImGui.AlignTextToFramePadding();
+                if (window.IsActive(now))
+                    ImGui.TextColored(CaughtColor, Loc.T($"Noch {FormatCountdown(window.EndUtc - now)}", $"{FormatCountdown(window.EndUtc - now)} left"));
+                else
+                    ImGui.TextUnformatted(Loc.T($"in {FormatCountdown(window.StartUtc - now)}", $"in {FormatCountdown(window.StartUtc - now)}"));
 
                 // Benötigter Köder als Icon + Anzahl im Inventar (siehe DrawBaitIcons).
                 ImGui.TableNextColumn();
@@ -513,7 +524,7 @@ public class MainWindow : Window
     private const int MaxPrepTimerMinutes = 50;
 
     /// <summary>Dauer als Countdown: "hh:mm:ss", ab einem Tag mit vorangestellten Tagen.</summary>
-    private static string FormatCountdown(TimeSpan span)
+    internal static string FormatCountdown(TimeSpan span)
     {
         if (span < TimeSpan.Zero)
             span = TimeSpan.Zero;
@@ -530,6 +541,8 @@ public class MainWindow : Window
     private static readonly Vector4 NotCaughtColor = new(0.95f, 0.35f, 0.4f, 1f);
 
     private string mountFilter = string.Empty;
+    private string fishSearchFilter = string.Empty;
+    private bool fishSearchExpanded;
 
     /// <summary>
     /// Trennlinie innerhalb einer Karte, die genauso weit von der Zeile darüber und darunter entfernt
@@ -551,10 +564,7 @@ public class MainWindow : Window
         ImGui.Dummy(new Vector2(0f, MathF.Max(0f, gap * 2f - spacingY * 2f)));
     }
 
-    // Obergrenze für "so viele Minuten vor der Prep Time zur Position fliegen".
-    private const int MaxTravelLeadMinutes = 30;
-
-    /// <summary>Einstellungen: Mount zum Fliegen und wie früh vor der Prep Time zur Angel-Position geflogen wird.</summary>
+    /// <summary>Einstellungen: Mount zum Fliegen.</summary>
     private void DrawSettingsPage()
     {
         var config = plugin.Configuration;
@@ -597,20 +607,19 @@ public class MainWindow : Window
             ImGui.EndCombo();
         }
 
-        // Trennlinie zwischen den Einstellungen (wie im Explorer's Codex) - vertikal mittig zwischen den Zeilen.
-        DrawCardSeparator();
+        ModernUi.EndCard();
 
-        // Vorlaufzeit: so viele Minuten vor der Prep Time schon zur Position fliegen.
-        var lead = Math.Clamp(config.TravelLeadMinutes, 0, MaxTravelLeadMinutes);
-        ModernUi.LabelRow(Loc.T("Vorher zur Position fliegen", "Fly to the position beforehand"), 280f,
-            Loc.T(
-                "So viele Minuten vor der Prep Time fliegt die Automation schon zur Angel-Position und wartet dort. Geangelt wird erst ab der Prep Time.",
-                "The automation flies to the fishing position this many minutes before the prep time and waits there. Fishing only starts at the prep time."));
-        if (ImGui.SliderInt("##TravelLead", ref lead, 0, MaxTravelLeadMinutes, lead == 0 ? Loc.T("Genau zur Prep Time", "Exactly at prep time") : Loc.T("%d Min. vorher", "%d min before")))
-            config.TravelLeadMinutes = lead;
-        if (ImGui.IsItemDeactivatedAfterEdit())
+        ModernUi.GroupLabel(Loc.T("Overlay", "Overlay"));
+        ModernUi.BeginCard();
+        var showOverlayOnStart = config.ShowOverlayOnStart;
+        if (ModernUi.ToggleRow(Loc.T("Overlay beim Start anzeigen", "Show overlay on start"), ref showOverlayOnStart,
+                Loc.T(
+                    "Öffnet beim Klick auf \"Start\" automatisch ein kleines Status-Fenster, das zeigt, was die Automation gerade macht und wann es weitergeht.",
+                    "Automatically opens a small status window when you click \"Start\", showing what the automation is currently doing and when it continues.")))
+        {
+            config.ShowOverlayOnStart = showOverlayOnStart;
             config.Save();
-
+        }
         ModernUi.EndCard();
     }
 
@@ -625,6 +634,10 @@ public class MainWindow : Window
             Loc.T("Fischdaten", "Fish Data"),
             Loc.T("Big Fish aus Dawntrail und wann sie das nächste Mal beißen.", "Dawntrail Big Fish and when they bite next."));
 
+        var itemSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
+        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
+        string FishDisplayName(BigFish f) => itemSheet.TryGetRow(f.ItemId, out var it) ? it.Name.ToString() : $"#{f.ItemId}";
+
         var hideCaught = config.HideCaughtFish;
         ModernUi.BeginCard();
         if (ModernUi.ToggleRow(Loc.T("Bereits gefangene ausblenden", "Hide already caught fish"), ref hideCaught))
@@ -635,30 +648,45 @@ public class MainWindow : Window
         ModernUi.EndCard();
 
         var now = DateTime.UtcNow;
-        var itemSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>();
-        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
+
+        // Die Suche wirkt sich nur aus, solange sie aufgeklappt ist (siehe DrawFishSearchToggle) -
+        // eingeklappt zeigt die Tabelle wieder alle Fische, ohne den zuletzt eingegebenen Text zu
+        // verlieren (er steht beim erneuten Aufklappen wieder da).
+        var effectiveSearch = fishSearchExpanded ? fishSearchFilter : string.Empty;
 
         var rows = BigFishData.Dawntrail
             .Select(fish => (Fish: fish, Caught: FishCatchState.IsCaught(fish.ItemId), Window: FishWindows.GetCurrentOrNext(fish, now)))
             .Where(r => !hideCaught || !r.Caught)
+            .Where(r => string.IsNullOrWhiteSpace(effectiveSearch) || FishDisplayName(r.Fish).Contains(effectiveSearch, StringComparison.OrdinalIgnoreCase))
             .OrderBy(r => r.Window == null ? DateTime.MaxValue : r.Window.Value.IsActive(now) ? DateTime.MinValue : r.Window.Value.StartUtc)
             .ToList();
-
-        if (rows.Count == 0)
-        {
-            ImGui.PushStyleColor(ImGuiCol.Text, ModernUi.TextMuted);
-            ImGui.TextUnformatted(Loc.T("Alle Big Fish gefangen - Glückwunsch!", "All Big Fish caught - congratulations!"));
-            ImGui.PopStyleColor();
-            return;
-        }
 
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp | ImGuiTableFlags.PadOuterX;
         var presetNames = AutoHookPresets.GetNames();
 
+        // Kleines Lupen-/Pfeil-Icon neben der "FISCH"-Überschrift, das die Suche ein-/ausklappt -
+        // siehe DrawTableHeader(searchColumn:/drawSearchToggle:) unten.
+        void DrawFishSearchToggle()
+        {
+            using (Plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
+            {
+                var glyph = (fishSearchExpanded ? FontAwesomeIcon.ChevronUp : FontAwesomeIcon.Search).ToIconString();
+                ImGui.TextColored(ModernUi.TextMuted, glyph);
+            }
+
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(Loc.T("Fisch suchen", "Search fish"));
+                if (ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                    fishSearchExpanded = !fishSearchExpanded;
+            }
+        }
+
         // "Position speichern" nur in der Dev-Version (als Dev-Plugin geladen) - zum Erfassen der
         // Angel-Positionen (landen in Data/FishingPositions.json und damit beim nächsten Release bei allen).
         var isDev = Plugin.PluginInterface.IsDev;
-        if (!ImGui.BeginTable("##BigFishTimers", isDev ? 9 : 8, tableFlags))
+        var columnCount = isDev ? 9 : 8;
+        if (!ImGui.BeginTable("##BigFishTimers", columnCount, tableFlags))
             return;
 
         ImGui.TableSetupColumn("##Enabled", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
@@ -671,7 +699,39 @@ public class MainWindow : Window
         ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
         if (isDev)
             ImGui.TableSetupColumn("##SavePosition", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
-        DrawTableHeader(new[] { (1, Loc.T("FISCH", "FISH")), (2, Loc.T("KÖDER", "BAIT")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") }, lastColumn: isDev ? 8 : 7);
+        DrawTableHeader(new[] { (1, Loc.T("FISCH", "FISH")), (2, Loc.T("KÖDER", "BAIT")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, "PREP TIMER"), (6, "AUTOHOOK PRESET") },
+            lastColumn: isDev ? 8 : 7, searchColumn: 1, drawSearchToggle: DrawFishSearchToggle);
+
+        // Das Suchfeld sitzt direkt UNTER der "FISCH"-Überschrift, in einer eigenen Zeile - dadurch
+        // ist es automatisch genauso breit wie die Spalte selbst (SetNextItemWidth(-1) füllt immer
+        // nur die aktuelle Spalte), statt wie zuvor die volle Fensterbreite einzunehmen.
+        if (fishSearchExpanded)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TableNextColumn();
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputTextWithHint("##FishSearch", Loc.T("Fisch suchen...", "Search fish..."), ref fishSearchFilter, 100);
+            for (var column = 2; column < columnCount; column++)
+                ImGui.TableNextColumn();
+        }
+
+        if (rows.Count == 0)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TableNextColumn();
+            ImGui.PushStyleColor(ImGuiCol.Text, ModernUi.TextMuted);
+            ImGui.TextUnformatted(string.IsNullOrWhiteSpace(effectiveSearch)
+                ? Loc.T("Alle Big Fish gefangen - Glückwunsch!", "All Big Fish caught - congratulations!")
+                : Loc.T("Kein Fisch gefunden.", "No fish found."));
+            ImGui.PopStyleColor();
+            for (var column = 2; column < columnCount; column++)
+                ImGui.TableNextColumn();
+
+            ImGui.EndTable();
+            return;
+        }
 
         foreach (var (fish, caught, window) in rows)
         {
@@ -679,7 +739,7 @@ public class MainWindow : Window
 
             // Auswahl, ob man diesen Fisch machen will - nur mit eingetragener Angel-Position möglich.
             ImGui.TableNextColumn();
-            var supported = FishingPositionStore.Get(fish.ItemId) != null;
+            var supported = FishingPositionStore.GetAll(fish.ItemId).Count > 0;
             var enabled = supported && config.EnabledFish.Contains(fish.ItemId);
             if (!supported)
                 ImGui.BeginDisabled();
@@ -744,12 +804,23 @@ public class MainWindow : Window
             else
                 ImGui.TextUnformatted(FormatDuration(window.Value.EndUtc - window.Value.StartUtc));
 
-            // Prep Timer: Slider 0-50 Minuten (0 = aus), gespeichert beim Loslassen.
+            // Prep Timer: Slider 0-50 Minuten (0 = aus), gespeichert beim Loslassen. Die Obergrenze
+            // wird pro Fisch so weit heruntergesetzt, dass Prep Time + Fenster-Uptime nie über die
+            // vollen 50 Minuten kommt - sonst würde die Automation schon losfliegen, bevor das
+            // vorherige Fenster überhaupt vorbei ist. Bei "immer verfügbar"/unbekanntem Fenster (siehe
+            // Dauer-Spalte oben) gibt es keine Uptime, die das einschränken könnte.
             ImGui.TableNextColumn();
-            var minutes = Math.Clamp(config.FishAlertMinutes.GetValueOrDefault(fish.ItemId), 0, MaxPrepTimerMinutes);
+            var maxPrepMinutes = MaxPrepTimerMinutes;
+            if (!FishWindows.IsAlwaysAvailable(fish) && window != null)
+            {
+                var uptimeMinutes = (window.Value.EndUtc - window.Value.StartUtc).TotalMinutes;
+                maxPrepMinutes = Math.Clamp((int)Math.Floor(MaxPrepTimerMinutes - uptimeMinutes), 0, MaxPrepTimerMinutes);
+            }
+
+            var minutes = Math.Clamp(config.FishAlertMinutes.GetValueOrDefault(fish.ItemId), 0, maxPrepMinutes);
             ImGui.SetNextItemWidth(-1f);
             var format = minutes == 0 ? Loc.T("Aus", "Off") : Loc.T("%d Min.", "%d min");
-            if (ImGui.SliderInt($"##prep_{fish.ItemId}", ref minutes, 0, MaxPrepTimerMinutes, format))
+            if (ImGui.SliderInt($"##prep_{fish.ItemId}", ref minutes, 0, maxPrepMinutes, format))
             {
                 if (minutes == 0)
                     config.FishAlertMinutes.Remove(fish.ItemId);
@@ -860,16 +931,20 @@ public class MainWindow : Window
     }
 
     /// <summary>
-    /// Nur Dev-Version: speichert die aktuelle Position + Blickrichtung als Angel-Position dieses
-    /// Fischs (nur in dessen Zone möglich) - direkt in Data/FishingPositions.json im Projektordner, damit
-    /// sie mit dem nächsten Commit/Release bei allen Nutzern ankommt. Umschalt+Klick entfernt sie wieder.
+    /// Nur Dev-Version: fügt die aktuelle Position + Blickrichtung als WEITEREN Angel-Spot dieses
+    /// Fischs hinzu (nur in dessen Zone möglich) - direkt in Data/FishingPositions.json im
+    /// Projektordner, damit er mit dem nächsten Commit/Release bei allen Nutzern ankommt. Ein Fisch
+    /// kann mehrere Spots haben (siehe FishingPositionStore.Get - die Automation wählt davon bei
+    /// jedem Trip zufällig einen aus, damit nicht immer an derselben Stelle geangelt wird). Die kleine
+    /// Zahl neben dem Icon zeigt, wie viele Spots bereits eingetragen sind. Umschalt+Klick entfernt
+    /// den zuletzt hinzugefügten Spot wieder.
     /// </summary>
     private static void DrawSavePositionButton(BigFish fish)
     {
         var player = Plugin.ObjectTable.LocalPlayer;
         var inZone = player != null && Plugin.ClientState.TerritoryType == fish.TerritoryId;
-        var saved = FishingPositionStore.Get(fish.ItemId);
-        var hasSaved = saved != null;
+        var spots = FishingPositionStore.GetAll(fish.ItemId);
+        var hasSaved = spots.Count > 0;
         var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
 
         ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0f, 0f, 0f, 0f));
@@ -882,14 +957,22 @@ public class MainWindow : Window
             ImGui.EndDisabled();
         ImGui.PopStyleColor(3);
 
+        if (hasSaved)
+        {
+            ImGui.SameLine(0f, 2f);
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextColored(CaughtColor, spots.Count.ToString());
+        }
+
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            var p = saved?.Position ?? Vector3.Zero;
             var info = hasSaved
-                ? Loc.T($"Gespeichert: {p.X:F2}, {p.Y:F2}, {p.Z:F2}\nUmschalt+Klick: entfernen", $"Saved: {p.X:F2}, {p.Y:F2}, {p.Z:F2}\nShift+click: remove")
+                ? Loc.T(
+                    $"{spots.Count} Spot(s):\n{string.Join("\n", spots.Select((s, i) => $"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}"))}\nUmschalt+Klick: zuletzt hinzugefügten entfernen",
+                    $"{spots.Count} spot(s):\n{string.Join("\n", spots.Select((s, i) => $"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}"))}\nShift+click: remove last added")
                 : string.Empty;
             var action = inZone
-                ? Loc.T("Klick: aktuelle Position + Blickrichtung in Data/FishingPositions.json speichern", "Click: save current position + facing to Data/FishingPositions.json")
+                ? Loc.T("Klick: aktuelle Position + Blickrichtung als weiteren Spot speichern", "Click: save current position + facing as another spot")
                 : Loc.T("Nur in der Zone des Fischs speicherbar", "Can only be saved in the fish's zone");
             ImGui.SetTooltip(string.IsNullOrEmpty(info) ? action : $"{action}\n{info}");
         }
@@ -898,11 +981,14 @@ public class MainWindow : Window
             return;
 
         var name = FishingAutomation.FishName(fish);
-        if (ImGui.GetIO().KeyShift && hasSaved)
+        if (ImGui.GetIO().KeyShift)
         {
-            if (!FishingPositionStore.Remove(fish.ItemId))
+            if (!hasSaved)
+                return;
+
+            if (!FishingPositionStore.RemoveAt(fish.ItemId, spots.Count - 1))
                 Plugin.Log.Warning("[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - nur lokal entfernt.");
-            Plugin.Log.Info($"[DevTools] Angel-Position für {name} entfernt.");
+            Plugin.Log.Info($"[DevTools] Zuletzt hinzugefügten Angel-Spot für {name} entfernt.");
             return;
         }
 
@@ -911,10 +997,10 @@ public class MainWindow : Window
 
         var position = player.Position;
         var facing = player.Rotation;
-        if (FishingPositionStore.Save(fish.ItemId, name, position, facing))
-            Plugin.Log.Info($"[DevTools] Angel-Position für {name} in {FishingPositionStore.SourceFilePath} gespeichert: {position}, Blickrichtung {facing:F3}.");
+        if (FishingPositionStore.Add(fish.ItemId, name, position, facing))
+            Plugin.Log.Info($"[DevTools] Neuer Angel-Spot für {name} in {FishingPositionStore.SourceFilePath} gespeichert: {position}, Blickrichtung {facing:F3}.");
         else
-            Plugin.Log.Warning($"[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - Position für {name} nur lokal gespeichert.");
+            Plugin.Log.Warning($"[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - Spot für {name} nur lokal gespeichert.");
     }
 
     private static void DrawAutoHookPresetCombo(Configuration config, uint itemId, IReadOnlyList<string> presetNames)
@@ -975,7 +1061,7 @@ public class MainWindow : Window
     /// mit farbigem Balken): kleine Großbuchstaben in TextMuted, darunter eine feine Linie über die
     /// volle Tabellenbreite.
     /// </summary>
-    private static void DrawTableHeader((int Column, string Text)[] headers, int lastColumn)
+    private static void DrawTableHeader((int Column, string Text)[] headers, int lastColumn, int? searchColumn = null, Action? drawSearchToggle = null)
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, 0u);
@@ -985,6 +1071,11 @@ public class MainWindow : Window
             ImGui.Dummy(new Vector2(0f, 2f));
             ImGui.SetWindowFontScale(0.85f);
             ImGui.TextColored(ModernUi.TextMuted, header);
+            if (column == searchColumn)
+            {
+                ImGui.SameLine(0f, 6f);
+                drawSearchToggle?.Invoke();
+            }
             ImGui.SetWindowFontScale(1f);
         }
 
@@ -1009,6 +1100,7 @@ public class MainWindow : Window
         var availWidth = ImGui.GetContentRegionAvail().X;
         if (availWidth > aboutIconSize)
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + (availWidth - aboutIconSize) * 0.5f);
+
         ImGui.Image(aboutIcon.Handle, new Vector2(aboutIconSize, aboutIconSize));
 
         // Etwas Abstand zwischen Icon und Titel/Version, statt direkt am Icon zu kleben.
@@ -1118,6 +1210,42 @@ public class MainWindow : Window
         drawList.AddText(new Vector2(contentStartX + iconSize.X + gap, min.Y + (max.Y - min.Y - textSize.Y) * 0.5f), textColor, text);
 
         return clicked;
+    }
+
+    /// <summary>
+    /// Heller Schimmer-Balken, der in Dauerschleife von links nach rechts über einen Button läuft
+    /// (z.B. den roten Stop-Knopf, solange die Automation läuft) - ein weicher, halbtransparenter
+    /// weißer Streifen mit Gradient an beiden Rändern, an den Button-Rändern sauber abgeschnitten
+    /// (PushClipRect). Über ImGui.GetTime() (Echtzeit-Sekunden seit Programmstart) animiert, läuft
+    /// daher unabhängig von der Framerate immer gleich schnell.
+    /// </summary>
+    private static void DrawShimmer(Vector2 min, Vector2 max)
+    {
+        const float periodSeconds = 2.2f;
+        const float bandWidthFraction = 0.35f;
+
+        var width = max.X - min.X;
+        var bandWidth = width * bandWidthFraction;
+        var t = (float)(ImGui.GetTime() % periodSeconds) / periodSeconds;
+        // Läuft komplett außerhalb links bis komplett außerhalb rechts durch, damit er sauber
+        // rein- und wieder rausläuft, statt an den Rändern abrupt zu erscheinen/verschwinden.
+        var bandCenterX = min.X - bandWidth + t * (width + bandWidth * 2f);
+
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.PushClipRect(min, max, true);
+
+        var transparent = ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0f));
+        var bright = ImGui.GetColorU32(new Vector4(1f, 1f, 1f, 0.35f));
+
+        var leftMin = new Vector2(bandCenterX - bandWidth * 0.5f, min.Y);
+        var mid = new Vector2(bandCenterX, max.Y);
+        drawList.AddRectFilledMultiColor(leftMin, mid, transparent, bright, bright, transparent);
+
+        var midTop = new Vector2(bandCenterX, min.Y);
+        var rightMax = new Vector2(bandCenterX + bandWidth * 0.5f, max.Y);
+        drawList.AddRectFilledMultiColor(midTop, rightMax, bright, transparent, transparent, bright);
+
+        drawList.PopClipRect();
     }
 
     private static Vector2 MeasureIconTextButtonSize(FontAwesomeIcon icon, string text, Vector2 padding)
