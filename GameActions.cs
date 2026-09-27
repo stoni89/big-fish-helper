@@ -178,6 +178,19 @@ public static class GameActions
         return actionManager != null && actionManager->UseAction(ActionType.Action, CastActionId);
     }
 
+    /// <summary>
+    /// Ob "Auswerfen" JETZT tatsächlich ausführbar wäre (0 = keine Einschränkung: nicht auf Abklingzeit,
+    /// nicht schon am Angeln, richtige Klasse, in Reichweite von Wasser, ...) - ohne die Aktion
+    /// tatsächlich auszulösen. Für die orange Markierung in der Fischdaten-Liste (siehe
+    /// FishingAutomation.IsAtCastablePosition) - dieselbe Prüfung, die auch die Ausgrauung der
+    /// Hotbar im Spiel selbst treibt.
+    /// </summary>
+    public static unsafe bool CanCastFishingRod()
+    {
+        var actionManager = ActionManager.Instance();
+        return actionManager != null && actionManager->GetActionStatus(ActionType.Action, CastActionId) == 0;
+    }
+
     /// <summary>Wie viele Stück eines Items aktuell im Inventar liegen - für die Köder-Anzeige in Fish Data.</summary>
     public static unsafe uint GetInventoryItemCount(uint itemId)
     {

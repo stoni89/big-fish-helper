@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Numerics;
@@ -79,6 +80,12 @@ public class MainWindow : Window
     public MainWindow(Plugin plugin) : base($"{PluginDisplayName} (v{VersionText})##BigFishHelper", BaseFlags)
     {
         this.plugin = plugin;
+
+        settingsNavItems = new (FontAwesomeIcon, string, Action)[]
+        {
+            (FontAwesomeIcon.Cog, Loc.T("Allgemein", "General"), DrawSettingsGeneralTab),
+            (FontAwesomeIcon.Bug, Loc.T("Debug", "Debug"), DrawSettingsDebugTab),
+        };
 
         Size = expandedSize;
         SizeCondition = ImGuiCond.FirstUseEver;
@@ -331,7 +338,8 @@ public class MainWindow : Window
         }
         else if (railPage == RailPage.Settings)
         {
-            // Ohne eigene Unterteilung (Seitenleiste) - die Einstellungen nutzen die volle Breite.
+            // DrawSettingsPage zeichnet selbst noch eine eigene Sidebar (Allgemein/Debug) - dieser
+            // äußere Child dient nur als Platz-/Scrollrahmen für die ganze Settings-Seite.
             ImGui.BeginChild("##OptionsContent", contentSize, false);
             ImGui.Spacing();
             ImGui.Indent(4f);
@@ -539,6 +547,12 @@ public class MainWindow : Window
 
     private static readonly Vector4 CaughtColor = new(0.45f, 0.9f, 0.45f, 1f);
     private static readonly Vector4 NotCaughtColor = new(0.95f, 0.35f, 0.4f, 1f);
+    private static readonly Vector4 CastablePositionColor = new(0.95f, 0.6f, 0.2f, 1f);
+
+    // Innerhalb dieser Entfernung (Yalms) zu einem gespeicherten Spot gilt man im "Speichern"-Knopf-
+    // Tooltip als "gerade dort stehend" (siehe DrawSavePositionButton) - großzügig genug, um kleine
+    // Abweichungen (z.B. durch erneutes Landen) noch als denselben Spot zu erkennen.
+    private const float CurrentSpotHighlightRadius = 3f;
 
     private string mountFilter = string.Empty;
     private string fishSearchFilter = string.Empty;
@@ -564,11 +578,51 @@ public class MainWindow : Window
         ImGui.Dummy(new Vector2(0f, MathF.Max(0f, gap * 2f - spacingY * 2f)));
     }
 
-    /// <summary>Einstellungen: Mount zum Fliegen.</summary>
+    // Reihenfolge/Aufbau 1:1 wie Explorer's Codex' Settings-Unternavigation (siehe dessen
+    // MainWindow.navItems/DrawInner) - dort zusätzlich "Anzeige" (Display), das hier bewusst
+    // entfällt (Nutzeranforderung: Big Fish Helper hat keine vergleichbaren Anzeige-Einstellungen).
+    private readonly (FontAwesomeIcon Icon, string Label, Action Draw)[] settingsNavItems;
+    private int settingsNavIndex;
+
+    /// <summary>
+    /// Einstellungen: eigene Sidebar (Allgemein/Debug) mit Überschrift + ModernUi.SidebarItem-Liste -
+    /// exakt derselbe Aufbau wie Explorer's Codex' Settings-Seite (sidebarWidth 200f, Titel in 1.5x
+    /// Schriftgröße, darunter die Nav-Einträge, siehe dessen MainWindow.DrawInner/RailPage.Settings-
+    /// Zweig), nur eine Ebene tiefer innerhalb von Big Fish Helpers eigener "Settings"-Rail-Seite.
+    /// </summary>
     private void DrawSettingsPage()
     {
+        const float sidebarWidth = 200f;
+
+        ImGui.BeginChild("##SettingsSidebar", new Vector2(sidebarWidth, 0f), false, ImGuiWindowFlags.NoScrollbar);
+        ImGui.Spacing();
+        ImGui.SetWindowFontScale(1.5f);
+        ImGui.TextUnformatted(Loc.T("Einstellungen", "Settings"));
+        ImGui.SetWindowFontScale(1f);
+        ImGui.Spacing();
+        for (var i = 0; i < settingsNavItems.Length; i++)
+        {
+            if (ModernUi.SidebarItem(settingsNavItems[i].Icon, settingsNavItems[i].Label, settingsNavIndex == i))
+                settingsNavIndex = i;
+        }
+        ImGui.EndChild();
+
+        ImGui.SameLine();
+
+        ImGui.BeginChild("##SettingsSubContent", new Vector2(0f, 0f), false);
+        ImGui.Spacing();
+        ImGui.Indent(4f);
+        settingsNavItems[settingsNavIndex].Draw();
+        ImGui.Unindent(4f);
+        ImGui.EndChild();
+    }
+
+    /// <summary>Bisheriger (kompletter) Inhalt der Settings-Seite: Anflug-Mount + Overlay.</summary>
+    private void DrawSettingsGeneralTab()
+    {
         var config = plugin.Configuration;
-        ModernUi.SectionHeader(Loc.T("Einstellungen", "Settings"), Loc.T("Allgemeine Einstellungen der Automation.", "General settings of the automation."));
+
+        ModernUi.SectionHeader(Loc.T("Allgemein", "General"), Loc.T("Allgemeine Einstellungen der Automation.", "General settings of the automation."));
 
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));
         ModernUi.BeginCard();
@@ -619,6 +673,37 @@ public class MainWindow : Window
         {
             config.ShowOverlayOnStart = showOverlayOnStart;
             config.Save();
+        }
+        ModernUi.EndCard();
+    }
+
+    /// <summary>Debug-Seite: "Aktueller Status" 1:1 wie im Explorer's Codex (Zone + Weltposition + Kopieren-Knopf).</summary>
+    private void DrawSettingsDebugTab()
+    {
+        ModernUi.SectionHeader(
+            Loc.T("Debug", "Debug"),
+            Loc.T("Nur relevant, um Angel-Positionen ohne Fremd-Tool zu ermitteln.", "Only relevant for finding fishing positions without a third-party tool."));
+
+        ModernUi.GroupLabel(Loc.T("Aktueller Status", "Current status"));
+        ModernUi.BeginCard();
+        var territoryId = Plugin.ClientState.TerritoryType;
+        var territorySheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.TerritoryType>();
+        var zoneName = territorySheet.TryGetRow(territoryId, out var territory)
+            ? territory.PlaceName.ValueNullable?.Name.ToString() ?? "?"
+            : "?";
+        ImGui.TextUnformatted($"{Loc.T("Zone", "Zone")}: {zoneName} ({territoryId})");
+
+        var playerPos = Plugin.ObjectTable.LocalPlayer?.Position;
+        var posText = playerPos.HasValue
+            ? $"{playerPos.Value.X:F3}, {playerPos.Value.Y:F3}, {playerPos.Value.Z:F3}"
+            : Loc.T("nicht verfügbar", "not available");
+        ImGui.TextUnformatted($"{Loc.T("Eigene Weltposition", "Own world position")}: {posText}");
+
+        if (playerPos.HasValue && ImGui.Button(Loc.T("In Zwischenablage kopieren", "Copy to clipboard") + "##CopyPlayerPos"))
+        {
+            ImGui.SetClipboardText($"{playerPos.Value.X.ToString(CultureInfo.InvariantCulture)}f, " +
+                                    $"{playerPos.Value.Y.ToString(CultureInfo.InvariantCulture)}f, " +
+                                    $"{playerPos.Value.Z.ToString(CultureInfo.InvariantCulture)}f");
         }
         ModernUi.EndCard();
     }
@@ -797,12 +882,23 @@ public class MainWindow : Window
                 ImGui.SetTooltip(supported ? Loc.T("Diesen Fisch machen", "Go for this fish") : Loc.T("Aktuell nicht unterstützt", "Currently unsupported"));
 
             // Name (Angelplatz als Tooltip), direkt dahinter: gefangen = grüner Haken, sonst rotes X.
+            // Orange, solange der Spieler gerade an einer gespeicherten Angel-Position dieses Fischs
+            // steht (Nutzeranforderung) - siehe FishingAutomation.IsAtCastablePosition.
             ImGui.TableNextColumn();
             ImGui.AlignTextToFramePadding();
             var name = itemSheet.TryGetRow(fish.ItemId, out var item) ? item.Name.ToString() : $"#{fish.ItemId}";
-            ImGui.TextUnformatted(name);
-            if (ImGui.IsItemHovered() && spotSheet.TryGetRow(fish.FishingSpotId, out var spot))
-                ImGui.SetTooltip(spot.PlaceName.ValueNullable?.Name.ToString() ?? string.Empty);
+            var atCastablePosition = plugin.Automation.IsAtCastablePosition(fish);
+            if (atCastablePosition)
+                ImGui.TextColored(CastablePositionColor, name);
+            else
+                ImGui.TextUnformatted(name);
+            if (ImGui.IsItemHovered())
+            {
+                if (atCastablePosition)
+                    ImGui.SetTooltip(Loc.T("Du stehst hier - Angel auswerfen möglich", "You're standing here - you can cast now"));
+                else if (spotSheet.TryGetRow(fish.FishingSpotId, out var spot))
+                    ImGui.SetTooltip(spot.PlaceName.ValueNullable?.Name.ToString() ?? string.Empty);
+            }
 
             ImGui.SameLine(0f, 8f);
             using (Plugin.PluginInterface.UiBuilder.IconFontHandle.Push())
@@ -880,6 +976,7 @@ public class MainWindow : Window
             if (isDev)
             {
                 ImGui.TableNextColumn();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() - ImGui.GetStyle().ItemSpacing.X);
                 DrawSavePositionButton(fish);
             }
         }
@@ -934,9 +1031,14 @@ public class MainWindow : Window
         var disabled = !testingThis && (mainRunning || HasMissingRequiredDependency() || !automation.CanFlyToFish(fish));
         var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
 
+        // Orange, solange der Spieler sich schon in derselben Zone/Map wie dieser Fisch befindet
+        // (Nutzeranforderung) - unabhängig von der genauen Position (siehe dafür stattdessen den
+        // orangen Fischnamen/IsAtCastablePosition), rein als Hinweis "kein Zonenwechsel nötig".
+        var sameMap = !testingThis && Plugin.ClientState.TerritoryType == fish.TerritoryId;
+
         ImGui.PushStyleColor(ImGuiCol.Button, testingThis ? new Vector4(0.85f, 0.3f, 0.35f, 0.8f) : new Vector4(0f, 0f, 0f, 0f));
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, testingThis ? new Vector4(0.92f, 0.38f, 0.42f, 1f) : new Vector4(ModernUi.Accent.X, ModernUi.Accent.Y, ModernUi.Accent.Z, 0.35f));
-        ImGui.PushStyleColor(ImGuiCol.Text, testingThis ? Vector4.One : ModernUi.Accent);
+        ImGui.PushStyleColor(ImGuiCol.Text, testingThis ? Vector4.One : sameMap ? CastablePositionColor : ModernUi.Accent);
         if (disabled)
             ImGui.BeginDisabled();
         var clicked = IconTextButton($"flytofish_{fish.ItemId}", testingThis ? FontAwesomeIcon.Stop : FontAwesomeIcon.PaperPlane, string.Empty, buttonSize);
@@ -977,25 +1079,42 @@ public class MainWindow : Window
     /// kann mehrere Spots haben (siehe FishingPositionStore.Get - die Automation wählt davon bei
     /// jedem Trip zufällig einen aus, damit nicht immer an derselben Stelle geangelt wird). Die kleine
     /// Zahl neben dem Icon zeigt, wie viele Spots bereits eingetragen sind. Umschalt+Klick entfernt
-    /// den zuletzt hinzugefügten Spot wieder.
+    /// den zuletzt hinzugefügten Spot wieder, Rechtsklick öffnet ein Menü, um GEZIELT einen
+    /// beliebigen der eingetragenen Spots zu entfernen (Nutzeranforderung).
     /// </summary>
-    private static void DrawSavePositionButton(BigFish fish)
+    private void DrawSavePositionButton(BigFish fish)
     {
         var player = Plugin.ObjectTable.LocalPlayer;
         var inZone = player != null && Plugin.ClientState.TerritoryType == fish.TerritoryId;
+
+        // NEUES Speichern ist nur möglich, wenn der Fisch gerade orange markiert ist (siehe
+        // FishingAutomation.IsAtCastablePosition/DrawFishDataPage) - richtiger Angelplatz UND
+        // "Auswerfen" gerade tatsächlich möglich (Nutzeranforderung). Das gezielte LÖSCHEN bereits
+        // gespeicherter Spots (Rechtsklick-Menü/Umschalt+Klick) soll davon unabhängig immer gehen -
+        // der Knopf selbst bleibt deshalb klickbar, solange schon Spots eingetragen sind, auch wenn
+        // gerade nicht an einer gültigen Stelle gestanden wird; NUR das eigentliche Hinzufügen prüft
+        // atCastablePosition (siehe Klick-Behandlung weiter unten).
+        var atCastablePosition = plugin.Automation.IsAtCastablePosition(fish);
         var spots = FishingPositionStore.GetAll(fish.ItemId);
         var hasSaved = spots.Count > 0;
+        var canInteract = atCastablePosition || hasSaved;
         var buttonSize = new Vector2(ImGui.GetFrameHeight() + 6f, ImGui.GetFrameHeight());
 
         ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0f, 0f, 0f, 0f));
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(ModernUi.Accent.X, ModernUi.Accent.Y, ModernUi.Accent.Z, 0.35f));
         ImGui.PushStyleColor(ImGuiCol.Text, hasSaved ? CaughtColor : ModernUi.TextMuted);
-        if (!inZone && !hasSaved)
+        if (!canInteract)
             ImGui.BeginDisabled();
         var clicked = IconTextButton($"savepos_{fish.ItemId}", FontAwesomeIcon.MapMarkerAlt, string.Empty, buttonSize);
-        if (!inZone && !hasSaved)
+        if (!canInteract)
             ImGui.EndDisabled();
         ImGui.PopStyleColor(3);
+
+        // Rechtsklick: Popup mit allen Spots, um GEZIELT (nicht nur den zuletzt hinzugefügten wie bei
+        // Umschalt+Klick) einen davon zu entfernen (Nutzeranforderung).
+        var removePopupId = $"##RemoveSpotPopup_{fish.ItemId}";
+        if (hasSaved)
+            ImGui.OpenPopupOnItemClick(removePopupId, ImGuiPopupFlags.MouseButtonRight);
 
         if (hasSaved)
         {
@@ -1006,15 +1125,78 @@ public class MainWindow : Window
 
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
         {
-            var info = hasSaved
-                ? Loc.T(
-                    $"{spots.Count} Spot(s):\n{string.Join("\n", spots.Select((s, i) => $"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}"))}\nUmschalt+Klick: zuletzt hinzugefügten entfernen",
-                    $"{spots.Count} spot(s):\n{string.Join("\n", spots.Select((s, i) => $"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}"))}\nShift+click: remove last added")
-                : string.Empty;
-            var action = inZone
+            var action = atCastablePosition
                 ? Loc.T("Klick: aktuelle Position + Blickrichtung als weiteren Spot speichern", "Click: save current position + facing as another spot")
-                : Loc.T("Nur in der Zone des Fischs speicherbar", "Can only be saved in the fish's zone");
-            ImGui.SetTooltip(string.IsNullOrEmpty(info) ? action : $"{action}\n{info}");
+                : Loc.T(
+                    "Nur an einer tatsächlich auswerfbaren Stelle speicherbar (siehe orange Markierung in der Liste)",
+                    "Can only be saved at an actually castable spot (see orange highlight in the list)");
+
+            if (!hasSaved)
+            {
+                ImGui.SetTooltip(action);
+            }
+            else
+            {
+                // Nächstgelegener Spot zur aktuellen Position (nur wenn nah genug dran, siehe
+                // CurrentSpotHighlightRadius) wird grün hervorgehoben - zeigt beim Vergleichen
+                // mehrerer gespeicherter Spots desselben Fischs, an welchem man gerade steht
+                // (Nutzeranforderung), statt nur die reine Koordinatenliste ohne Bezug zur eigenen
+                // Position zu zeigen. Braucht dafür ImGui.BeginTooltip statt SetTooltip - nur so
+                // lässt sich eine einzelne Zeile abweichend einfärben.
+                var closestIndex = -1;
+                if (inZone && player != null)
+                {
+                    var playerPos = player.Position;
+                    var closestDistance = float.MaxValue;
+                    for (var i = 0; i < spots.Count; i++)
+                    {
+                        var distance = Vector3.Distance(playerPos, new Vector3(spots[i].X, spots[i].Y, spots[i].Z));
+                        if (distance < closestDistance)
+                        {
+                            closestDistance = distance;
+                            closestIndex = i;
+                        }
+                    }
+
+                    if (closestDistance > CurrentSpotHighlightRadius)
+                        closestIndex = -1;
+                }
+
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted(action);
+                ImGui.TextUnformatted(Loc.T($"{spots.Count} Spot(s):", $"{spots.Count} spot(s):"));
+                for (var i = 0; i < spots.Count; i++)
+                {
+                    var s = spots[i];
+                    var line = $"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}";
+                    if (i == closestIndex)
+                        ImGui.TextColored(CaughtColor, $"{line}  <- {Loc.T("hier", "here")}");
+                    else
+                        ImGui.TextUnformatted(line);
+                }
+
+                ImGui.TextUnformatted(Loc.T("Umschalt+Klick: zuletzt hinzugefügten entfernen", "Shift+click: remove last added"));
+                ImGui.TextUnformatted(Loc.T("Rechtsklick: gezielt einen Spot entfernen", "Right-click: remove a specific spot"));
+                ImGui.EndTooltip();
+            }
+        }
+
+        if (hasSaved && ImGui.BeginPopup(removePopupId))
+        {
+            ImGui.TextColored(ModernUi.TextMuted, Loc.T("Spot entfernen:", "Remove spot:"));
+            ImGui.Separator();
+            for (var i = 0; i < spots.Count; i++)
+            {
+                var s = spots[i];
+                if (ImGui.Selectable($"{i + 1}. {s.X:F2}, {s.Y:F2}, {s.Z:F2}##removespot{fish.ItemId}_{i}"))
+                {
+                    if (!FishingPositionStore.RemoveAt(fish.ItemId, i))
+                        Plugin.Log.Warning("[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - nur lokal entfernt.");
+                    Plugin.Log.Info($"[DevTools] Angel-Spot #{i + 1} für {FishingAutomation.FishName(fish)} entfernt.");
+                }
+            }
+
+            ImGui.EndPopup();
         }
 
         if (!clicked)
@@ -1032,12 +1214,15 @@ public class MainWindow : Window
             return;
         }
 
-        if (!inZone || player == null)
+        // Neu speichern nur an einer tatsächlich auswerfbaren Stelle (siehe atCastablePosition-
+        // Kommentar oben) - Entfernen (siehe Rechtsklick-Menü/Umschalt+Klick weiter oben) bleibt
+        // davon bewusst unberührt.
+        if (!atCastablePosition || player == null)
             return;
 
         var position = player.Position;
         var facing = player.Rotation;
-        if (FishingPositionStore.Add(fish.ItemId, name, position, facing))
+        if (FishingPositionStore.Add(fish, name, position, facing))
             Plugin.Log.Info($"[DevTools] Neuer Angel-Spot für {name} in {FishingPositionStore.SourceFilePath} gespeichert: {position}, Blickrichtung {facing:F3}.");
         else
             Plugin.Log.Warning($"[DevTools] Projektdatei Data/FishingPositions.json nicht gefunden - Spot für {name} nur lokal gespeichert.");

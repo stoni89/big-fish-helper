@@ -75,14 +75,64 @@ public static class FishingPositionStore
         return new Vector2(x, z);
     }
 
-    /// <summary>Nur Dev-Version: einen weiteren Spot hinzufügen (Projektdatei + geladene Kopie). false, wenn die Projektdatei nicht gefunden wurde.</summary>
-    public static bool Add(uint itemId, string fishName, Vector3 position, float facing)
+    /// <summary>
+    /// Mittelpunkt (siehe GetApproximateSpotCenter, Kartenpixel-zu-Welt-Skalierung über
+    /// map.SizeFactor) UND tatsächlicher Gültigkeitsradius (in Yalms) des Angelplatzes laut
+    /// Spieldaten - für die LIVE-Prüfung "steht der Spieler gerade an einer gültigen Angel-Stelle
+    /// dieses Fischs" (siehe FishingAutomation.IsAtCastablePosition), bewusst unabhängig von
+    /// gespeicherten Positionen (Nutzeranforderung: dieselbe Ortsangabe wie auf
+    /// https://ff14fish.carbuncleplushy.com, das dieselben Lumina-Spieldaten zugrunde legt).
+    ///
+    /// WICHTIG: FishingSpot.Radius ist NICHT über map.SizeFactor zu skalieren wie X/Z (das hätte den
+    /// Radius weit über den tatsächlichen Angelplatz hinaus bis in benachbarte Angelplätze reichen
+    /// lassen, siehe Nutzer-Report zu "Cazuela Crab"/"Muttering Matamata" in Urqopacha) - laut
+    /// GatherBuddy (github.com/Ottermandias/GatherBuddy, GatherBuddy.GameData/Classes/FishingSpot.cs:
+    /// "Radius = (ushort)(spot.Radius / 7)") ist der Rohwert stattdessen durch die feste Konstante 7
+    /// zu teilen, um Yalms zu erhalten - unabhängig von der Zonen-Kartenskalierung.
+    /// </summary>
+    public static (Vector2 Center, float Radius)? GetSpotCircle(BigFish fish)
+    {
+        var spotSheet = Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.FishingSpot>();
+        if (!spotSheet.TryGetRow(fish.FishingSpotId, out var spot) || spot.TerritoryType.ValueNullable is not { } territory
+            || territory.Map.ValueNullable is not { } map)
+            return null;
+
+        var x = (spot.X - 1024f) * 100f / map.SizeFactor - map.OffsetX;
+        var z = (spot.Z - 1024f) * 100f / map.SizeFactor - map.OffsetY;
+        var radius = spot.Radius / 7f;
+        return (new Vector2(x, z), radius);
+    }
+
+    /// <summary>
+    /// Nur Dev-Version: einen weiteren Spot hinzufügen (Projektdatei + geladene Kopie). Trägt denselben
+    /// Spot automatisch auch bei allen ANDEREN Fischen mit demselben FishingSpotId ein (Nutzeranforderung:
+    /// mehrere Big Fish am selben See/Fluss/Meer teilen sich denselben Angelplatz, also auch dieselben
+    /// gültigen Positionen - ohne das müsste man denselben Spot sonst für jeden Fisch einzeln erneut
+    /// speichern). Überspringt dabei Fische, bei denen exakt dieselbe Position schon eingetragen ist.
+    /// false, wenn die Projektdatei nicht gefunden wurde.
+    /// </summary>
+    public static bool Add(BigFish fish, string fishName, Vector3 position, float facing)
+    {
+        AddTo(fish.ItemId, fishName, position, facing);
+
+        foreach (var other in BigFishData.All.Where(f => f.FishingSpotId == fish.FishingSpotId && f.ItemId != fish.ItemId))
+        {
+            if (Entries.TryGetValue(other.ItemId, out var existing)
+                && existing.Any(e => e.X == position.X && e.Y == position.Y && e.Z == position.Z))
+                continue;
+
+            AddTo(other.ItemId, FishingAutomation.FishName(other), position, facing);
+        }
+
+        return Write();
+    }
+
+    private static void AddTo(uint itemId, string fishName, Vector3 position, float facing)
     {
         if (!Entries.TryGetValue(itemId, out var list))
             Entries[itemId] = list = new List<FishingPositionEntry>();
 
         list.Add(new FishingPositionEntry { Name = fishName, X = position.X, Y = position.Y, Z = position.Z, Facing = facing });
-        return Write();
     }
 
     /// <summary>Nur Dev-Version: einen einzelnen Spot entfernen (Projektdatei + geladene Kopie).</summary>

@@ -28,6 +28,7 @@ public sealed class FishingAutomation : IDisposable
         SwitchingJob,
         StartingAutoHook,
         Fishing,
+        TestTourWaiting,
     }
 
     private static readonly TimeSpan TeleportRetryInterval = TimeSpan.FromSeconds(5);
@@ -42,6 +43,9 @@ public sealed class FishingAutomation : IDisposable
     private static readonly TimeSpan JobSwitchTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FaceSettleDelay = TimeSpan.FromSeconds(1.5);
     private static readonly TimeSpan RestartInterval = TimeSpan.FromSeconds(10);
+    // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
+    // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
+    private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -60,6 +64,7 @@ public sealed class FishingAutomation : IDisposable
     private readonly ICallGateSubscriber<Vector3, bool, float, bool> pathfindAndMoveCloseTo;
     private readonly ICallGateSubscriber<bool> pathIsRunning;
     private readonly ICallGateSubscriber<bool> pathfindInProgress;
+    private readonly ICallGateSubscriber<bool> navmeshIsReady;
     private readonly ICallGateSubscriber<object> pathStop;
     private readonly ICallGateSubscriber<List<Vector3>, bool, object> moveToPath;
     private readonly ICallGateSubscriber<float> pathGetTolerance;
@@ -91,6 +96,13 @@ public sealed class FishingAutomation : IDisposable
     private float? destinationFacing;
     private bool isApproximate;
 
+    // "Fliege zum Fisch" (siehe StartTest/IsTest) mit MEHREREN gespeicherten Spots: alle der Reihe
+    // nach anfliegen und je TestTourWaitDuration dort warten (Nutzeranforderung: Simulation aller
+    // Spots), statt wie sonst (echte Automation, siehe targetPosition-Kommentar) nur EINEN zufällig
+    // ausgewählten Spot pro Trip zu benutzen. null/leer = normales Verhalten (kein Tour-Modus).
+    private List<FishingPosition>? testTourPositions;
+    private int testTourIndex;
+
     // Ob für diesen Trip schon einmal auf eine erreichbare Ausweichposition zurückgefallen wurde
     // (siehe TryFallbackLanding) - höchstens einmal pro Trip, sonst bricht die Automation danach
     // wirklich ab, statt endlos zwischen unerreichbaren Positionen zu pendeln.
@@ -116,6 +128,7 @@ public sealed class FishingAutomation : IDisposable
         pathfindAndMoveCloseTo = pi.GetIpcSubscriber<Vector3, bool, float, bool>("vnavmesh.SimpleMove.PathfindAndMoveCloseTo");
         pathIsRunning = pi.GetIpcSubscriber<bool>("vnavmesh.Path.IsRunning");
         pathfindInProgress = pi.GetIpcSubscriber<bool>("vnavmesh.SimpleMove.PathfindInProgress");
+        navmeshIsReady = pi.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
         pathStop = pi.GetIpcSubscriber<object>("vnavmesh.Path.Stop");
         moveToPath = pi.GetIpcSubscriber<List<Vector3>, bool, object>("vnavmesh.Path.MoveTo");
         pathGetTolerance = pi.GetIpcSubscriber<float>("vnavmesh.Path.GetTolerance");
@@ -158,7 +171,11 @@ public sealed class FishingAutomation : IDisposable
     // Wartezeit, Fenster-Prüfung und ohne AutoHook.
     private bool IsTest { get; set; }
 
-    /// <summary>"Fliege zum Fisch": sofort zur Angel-Position dieses Fischs fliegen (Teleport, falls nötig), dann stoppen.</summary>
+    /// <summary>
+    /// "Fliege zum Fisch": sind mehrere Spots gespeichert, fliegt eine Simulation ALLE der Reihe nach
+    /// ab (siehe testTourPositions/UpdateTestTourWaiting) - ist nur einer (oder gar keiner, dann der
+    /// ungefähre Angelplatz) gespeichert, wie bisher nur dorthin, dann stoppen.
+    /// </summary>
     public void StartTest(BigFish fish)
     {
         if (IsRunning)
@@ -167,7 +184,20 @@ public sealed class FishingAutomation : IDisposable
         IsRunning = true;
         IsTest = true;
         target = fish;
-        targetPosition = FishingPositionStore.Get(fish.ItemId);
+
+        var savedSpots = FishingPositionStore.GetAll(fish.ItemId);
+        if (savedSpots.Count > 0)
+        {
+            testTourPositions = savedSpots.Select(s => new FishingPosition(new Vector3(s.X, s.Y, s.Z), s.Facing)).ToList();
+            testTourIndex = 0;
+            targetPosition = testTourPositions[0];
+        }
+        else
+        {
+            testTourPositions = null;
+            targetPosition = null;
+        }
+
         targetWindow = new FishWindow(DateTime.UtcNow, DateTime.MaxValue);
         pathAttempts = 0;
         usedFallbackLanding = false;
@@ -191,6 +221,8 @@ public sealed class FishingAutomation : IDisposable
         DisableAutoHook();
         target = null;
         targetPosition = null;
+        testTourPositions = null;
+        testTourIndex = 0;
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
         Plugin.Log.Info("[FishingAutomation] Gestoppt.");
@@ -283,6 +315,9 @@ public sealed class FishingAutomation : IDisposable
             case State.Fishing:
                 UpdateFishing(now);
                 break;
+            case State.TestTourWaiting:
+                UpdateTestTourWaiting(now);
+                break;
         }
     }
 
@@ -296,6 +331,47 @@ public sealed class FishingAutomation : IDisposable
     /// nur, wenn sich wenigstens der ungefähre Angelplatz aus den Spieldaten auflösen lässt.
     /// </summary>
     public bool CanFlyToFish(BigFish fish) => CanReach(fish) || FishingPositionStore.GetApproximateSpotCenter(fish) != null;
+
+    /// <summary>
+    /// Ob der Spieler GERADE JETZT an diesem Fisch angeln könnte - LIVE geprüft, bewusst UNABHÄNGIG
+    /// von gespeicherten Positionen (Nutzeranforderung: dieselbe Ortsangabe wie
+    /// https://ff14fish.carbuncleplushy.com, das dieselben Lumina-Spieldaten zugrunde legt, nicht die
+    /// eigene FishingPositionStore-Liste): erst die richtige Zone, dann innerhalb des tatsächlichen
+    /// Angelplatz-Radius (siehe FishingPositionStore.GetSpotCircle), und zuletzt, ob "Auswerfen"
+    /// tatsächlich ausführbar wäre (siehe GameActions.CanCastFishingRod - dieselbe Prüfung wie die
+    /// Ausgrauung der Hotbar im Spiel selbst, deckt z.B. auch "falsche Klasse"/Abklingzeit ab). Für
+    /// die orange Markierung des Fischnamens in der Fischdaten-Liste.
+    /// </summary>
+    // Zusätzlicher Puffer (Yalms) auf den aus den Spieldaten berechneten Angelplatz-Radius (siehe
+    // FishingPositionStore.GetSpotCircle), NUR für einzelne, von Hand genannte Fische (Key = ItemId) -
+    // NICHT pauschal für alle, siehe Nutzeranforderung. Für Angelplätze, deren markierter Mittelpunkt
+    // selbst gar nicht erreichbar ist (z.B. mitten im Wasser), wodurch man ihm auf dem erreichbaren
+    // Ufer nie näher als der reine Radius kommt. "CanCastFishingRod" (dieselbe Prüfung wie die
+    // Hotbar-Ausgrauung im Spiel) bleibt unabhängig davon die eigentliche, harte Hürde.
+    private static readonly Dictionary<uint, float> ExtraCastablePositionRadius = new()
+    {
+        // Azure Diver (Eastbound Zorgor, Item-Id 46193): Mittelpunkt laut Spieldaten bei Weltposition
+        // (579, 836) mit Radius 142.9 Yalm - vom Nutzer gemeldete tatsächliche Stehposition
+        // (461.1, 690.4) ist davon aber ~187 Yalm entfernt, ~44 Yalm über dem reinen Radius.
+        [46193] = 60f,
+    };
+
+    public bool IsAtCastablePosition(BigFish fish)
+    {
+        var player = Plugin.ObjectTable.LocalPlayer;
+        if (player == null || Plugin.ClientState.TerritoryType != fish.TerritoryId)
+            return false;
+
+        if (FishingPositionStore.GetSpotCircle(fish) is not { } circle)
+            return false;
+
+        var radius = circle.Radius + ExtraCastablePositionRadius.GetValueOrDefault(fish.ItemId, 0f);
+        var playerXz = new Vector2(player.Position.X, player.Position.Z);
+        if (Vector2.Distance(playerXz, circle.Center) > radius)
+            return false;
+
+        return GameActions.CanCastFishingRod();
+    }
 
     /// <summary>
     /// Angehakte, noch nicht gefangene, erreichbare Fische, samt Fenster und Angel-Start (Prep Time =
@@ -454,8 +530,22 @@ public sealed class FishingAutomation : IDisposable
 
         if (Plugin.ClientState.TerritoryType == target!.TerritoryId)
         {
-            if (now - stateEnteredAt >= ZoneSettleDelay)
-                PrepareDestination();
+            if (now - stateEnteredAt < ZoneSettleDelay)
+                return;
+
+            // Ohne gespeicherte Position (siehe PrepareDestination, "ungefährer Angelplatz") braucht
+            // vnavmesh direkt nach dem Zonenwechsel noch einen Moment, bis das Navmesh der neuen Zone
+            // geladen ist - die Flag-zu-Punkt-Abfrage dort schlägt sonst fehl und PrepareDestination
+            // gibt fälschlich auf (Nutzer-Report: Automation stoppte direkt nach dem Teleport, statt
+            // kurz danach zum Fisch weiterzufliegen). Deshalb hier zusätzlich abwarten, bis vnavmesh
+            // bereit ist - ZoneTimeout bleibt dabei die Notbremse, falls es nie bereit wird.
+            if (!navmeshIsReady.InvokeFunc() && now - stateEnteredAt < ZoneTimeout)
+            {
+                StatusText = Loc.T("Warte auf vnavmesh-Navmesh für diese Zone...", "Waiting for vnavmesh's navmesh for this zone...");
+                return;
+            }
+
+            PrepareDestination();
             return;
         }
 
@@ -707,10 +797,21 @@ public sealed class FishingAutomation : IDisposable
 
     private void ArrivedAtFishingPosition()
     {
-        // "Fliege zum Fisch": angekommen - zum Wasser drehen und fertig.
+        // "Fliege zum Fisch": angekommen - zum Wasser drehen, dann fertig (ein Spot) oder kurz warten
+        // und zum nächsten Spot der Tour weiter (mehrere Spots, siehe UpdateTestTourWaiting).
         if (IsTest)
         {
             FaceWater();
+
+            if (testTourPositions is { Count: > 1 })
+            {
+                StatusText = Loc.T(
+                    $"An Spot {testTourIndex + 1}/{testTourPositions.Count} von {FishName(target!)} - warte {TestTourWaitDuration.TotalSeconds:F0}s...",
+                    $"At spot {testTourIndex + 1}/{testTourPositions.Count} of {FishName(target!)} - waiting {TestTourWaitDuration.TotalSeconds:F0}s...");
+                SetState(State.TestTourWaiting);
+                return;
+            }
+
             FinishTest(isApproximate
                 ? Loc.T(
                     $"In der Nähe von {FishName(target!)} (keine Position gespeichert - jetzt die genaue Stelle finden und speichern).",
@@ -720,6 +821,27 @@ public sealed class FishingAutomation : IDisposable
         }
 
         SetState(State.SwitchingJob);
+    }
+
+    /// <summary>Siehe testTourPositions - wartet TestTourWaitDuration, dann weiter zum nächsten Spot oder fertig, wenn der letzte erreicht war.</summary>
+    private void UpdateTestTourWaiting(DateTime now)
+    {
+        if (now - stateEnteredAt < TestTourWaitDuration)
+            return;
+
+        testTourIndex++;
+        if (testTourPositions == null || testTourIndex >= testTourPositions.Count)
+        {
+            FinishTest(Loc.T(
+                $"Simulation beendet - alle {testTourPositions?.Count ?? 0} Spots von {FishName(target!)} abgeflogen.",
+                $"Simulation finished - flew to all {testTourPositions?.Count ?? 0} spots of {FishName(target!)}."));
+            return;
+        }
+
+        targetPosition = testTourPositions[testTourIndex];
+        pathAttempts = 0;
+        usedFallbackLanding = false;
+        PrepareDestination();
     }
 
     private void FinishTest(string message)
