@@ -34,23 +34,33 @@ public static class GameActions
             .First().RowId;
     }
 
+    /// <summary>
+    /// Weltposition eines Ätheriten über seinen Kartenmarker (MapMarker) - nutzt bewusst DIREKT
+    /// aetheryte.Map (jede Aetheryte-Zeile trägt ihre eigene, richtige Karte) statt wie vorher ALLE
+    /// Map-Zeilen der Zone zu durchsuchen und die erste zu nehmen, deren Marker-Bereich zufällig
+    /// passt: Zonen mit mehreren Karten-Varianten (z.B. Städte mit zusätzlichen Event-/Phasen-Karten
+    /// über dieselbe TerritoryType-Zeile) konnten dadurch die falsche Karte treffen - mit abweichendem
+    /// SizeFactor/Offset ergab das eine stark verfälschte Position, wodurch z.B. der große Stadt-
+    /// Kristall-Ätherit ("Aetheryte Plaza") fälschlich weiter weg berechnet wurde als ein tatsächlich
+    /// entfernterer Ätherit (Nutzer-Report: falscher/entfernter Ätherit trotz näherem gewählt).
+    /// </summary>
     private static Vector3? ResolveAetherytePosition(Aetheryte aetheryte)
     {
+        if (aetheryte.Map.ValueNullable is not { } map)
+            return null;
+
         var markerSheet = Plugin.DataManager.GetSubrowExcelSheet<MapMarker>();
-        foreach (var map in Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Map>())
+        if (!markerSheet.TryGetRow(map.MapMarkerRange, out var markers))
+            return null;
+
+        foreach (var marker in markers)
         {
-            if (map.TerritoryType.RowId != aetheryte.Territory.RowId || !markerSheet.TryGetRow(map.MapMarkerRange, out var markers))
+            if (marker.DataType != 3 || marker.DataKey.RowId != aetheryte.RowId)
                 continue;
 
-            foreach (var marker in markers)
-            {
-                if (marker.DataType != 3 || marker.DataKey.RowId != aetheryte.RowId)
-                    continue;
-
-                var worldX = (marker.X - 1024f) * 100f / map.SizeFactor - map.OffsetX;
-                var worldZ = (marker.Y - 1024f) * 100f / map.SizeFactor - map.OffsetY;
-                return new Vector3(worldX, 0, worldZ);
-            }
+            var worldX = (marker.X - 1024f) * 100f / map.SizeFactor - map.OffsetX;
+            var worldZ = (marker.Y - 1024f) * 100f / map.SizeFactor - map.OffsetY;
+            return new Vector3(worldX, 0, worldZ);
         }
 
         return null;

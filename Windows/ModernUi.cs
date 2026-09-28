@@ -77,6 +77,13 @@ public static class ModernUi
         ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(1f, 1f, 1f, 0.05f));
         ImGui.PushStyleColor(ImGuiCol.Separator, new Vector4(1f, 1f, 1f, 0.08f));
 
+        // Scrollbars (z.B. der Fischtabelle) in der Akzentfarbe statt dem ImGui-Standard-Grau, damit
+        // sie zum Rest des (blauen) Plugin-Looks passen (Nutzeranforderung).
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarBg, new Vector4(0.10f, 0.16f, 0.25f, 0.6f));
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrab, Accent);
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabHovered, AccentHover);
+        ImGui.PushStyleColor(ImGuiCol.ScrollbarGrabActive, AccentHover);
+
         // Tabs (siehe z.B. Fischdaten-Seite: ein Tab pro Addon) - sonst der Standard-ImGui-Look
         // (helles Grau/eckig), passt farblich nicht zum Rest (dunkles Blau, abgerundet, Akzentfarbe).
         ImGui.PushStyleColor(ImGuiCol.Tab, new Vector4(0f, 0f, 0f, 0f));
@@ -88,7 +95,7 @@ public static class ModernUi
 
     public static void PopStyle()
     {
-        ImGui.PopStyleColor(18);
+        ImGui.PopStyleColor(22);
         ImGui.PopStyleVar(9);
     }
 

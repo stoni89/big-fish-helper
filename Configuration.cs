@@ -27,5 +27,16 @@ public class Configuration : IPluginConfiguration
     // Pro Big Fish (Item-Id) das zugeordnete AutoHook-Preset (Name) - siehe Timer-Seite.
     public Dictionary<uint, string> FishAutoHookPresets { get; set; } = new();
 
+    // Manueller Tie-Break-Sortierschlüssel (Nutzeranforderung) für Fische, die zur exakt gleichen
+    // Zeit losfliegen - ohne Eintrag hier sortiert FishingAutomation.GetPlannedFish stattdessen nach
+    // der Uptime-Rarität (seltenere zuerst). Wird nur bei manuellem Hoch/Runter in der "Geplante
+    // Fische"-Tabelle (Play-Seite) gesetzt, per Tausch mit dem jeweiligen Nachbarn.
+    public Dictionary<uint, double> FishTieBreakOrder { get; set; } = new();
+
+    // "Always Up Fish Backup Timer" (Nutzeranforderung, Einstellungen -> Allgemein): "immer
+    // verfügbare" Fische starten nur, wenn in den nächsten X Minuten kein Prep Timer eines NICHT
+    // immer verfügbaren Fischs beginnt (0 = aus, Default) - siehe FishingAutomation.UpdateWaiting.
+    public int AlwaysUpFishBackupTimerMinutes { get; set; } = 0;
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

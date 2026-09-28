@@ -29,6 +29,12 @@ public static class FishWindows
     private static readonly Dictionary<uint, FishWindow?> Cache = new();
     private static readonly Dictionary<uint, (byte[] Rates, uint[] Weathers)?> WeatherRateCache = new();
 
+    // Uptime-Rarität (siehe GetUptimePercent) über die nächsten UPTIME_WINDOW_COUNT Fenster -
+    // identisch zu "maxWindows = 10" im Referenz-Tracker "ff14-fish-tracker-app" (js/app/
+    // fishwatcher.js), dessen Wert ff14fish.carbuncleplushy.com als Prozentzahl neben "Uptime" zeigt.
+    private const int UptimeWindowCount = 10;
+    private static readonly Dictionary<uint, (DateTime InvalidateAtUtc, float Uptime)> UptimeCache = new();
+
     /// <summary>Aktuelles oder nächstes Fenster - null, falls in der Vorschau keins gefunden wurde.</summary>
     public static FishWindow? GetCurrentOrNext(BigFish fish, DateTime nowUtc)
     {
@@ -44,21 +50,88 @@ public static class FishWindows
     public static bool IsAlwaysAvailable(BigFish fish) =>
         fish.WeatherSet.Length == 0 && fish.PreviousWeatherSet.Length == 0 && fish.StartHour == 0f && fish.EndHour >= 24f;
 
+    /// <summary>
+    /// Uptime-Rarität wie auf ff14fish.carbuncleplushy.com ("die Prozentzahl neben der Uptime") - für
+    /// immer verfügbare Fische 100%, sonst Summe der Fensterdauern der nächsten UptimeWindowCount
+    /// Fenster geteilt durch die Gesamtzeit vom Start des ersten bis zum Ende des letzten dieser
+    /// Fenster. Identischer Algorithmus wie im Referenz-Tracker "ff14-fish-tracker-app" (js/app/
+    /// fish.js: uptime()), von dem auch die übrigen Fischdaten stammen (siehe BigFishData-Kommentar).
+    /// Ändert sich mit der Zeit (abhängig vom aktuellen Wettermuster) - daher wie GetCurrentOrNext
+    /// zwischengespeichert, bis das ERSTE der zugrunde liegenden Fenster vorbei ist. Null, falls
+    /// innerhalb der Suchgrenze (MaxPeriods) weniger als zwei Fenster gefunden wurden (extrem seltene
+    /// Wetter-/Zeit-Kombination) - dann wäre der Bruch (eine einzelne Fensterdauer/sich selbst)
+    /// irreführend immer 100%, egal wie selten der Fisch tatsächlich ist.
+    /// </summary>
+    public static float? GetUptimePercent(BigFish fish, DateTime nowUtc)
+    {
+        if (IsAlwaysAvailable(fish))
+            return 1f;
+
+        if (UptimeCache.TryGetValue(fish.ItemId, out var cached) && nowUtc < cached.InvalidateAtUtc)
+            return cached.Uptime;
+
+        var nowUnix = new DateTimeOffset(nowUtc).ToUnixTimeSeconds();
+        double? firstStart = null;
+        var firstEnd = 0d;
+        var lastEnd = 0d;
+        var sum = 0d;
+        var count = 0;
+        foreach (var (start, end) in ComputeWindowsRaw(fish, nowUnix, UptimeWindowCount))
+        {
+            if (firstStart == null)
+            {
+                firstStart = start;
+                firstEnd = end;
+            }
+
+            lastEnd = end;
+            sum += end - start;
+            count++;
+        }
+
+        if (count < 2 || firstStart == null || lastEnd <= firstStart.Value)
+            return null;
+
+        var uptime = (float)(sum / (lastEnd - firstStart.Value));
+        UptimeCache[fish.ItemId] = (ToWindow(firstStart.Value, firstEnd).EndUtc, uptime);
+        return uptime;
+    }
+
     private static FishWindow? Compute(BigFish fish, DateTime nowUtc)
     {
         var nowUnix = new DateTimeOffset(nowUtc).ToUnixTimeSeconds();
+        foreach (var (start, end) in ComputeWindowsRaw(fish, nowUnix, 1))
+            return ToWindow(start, end);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Liefert die nächsten (bis zu) maxWindows zusammenhängenden Zeitfenster des Fischs ab nowUnix
+    /// (Echtzeit-Unix-Sekunden, jeweils Start/Ende) - Basis sowohl für Compute (ein Fenster) als auch
+    /// GetUptimePercent (mehrere Fenster für die Rarität). Direkt aneinander anschließende Stücke
+    /// (auch über Perioden-/Wetterwechsel hinweg) werden dabei zu einem Fenster zusammengefasst.
+    /// </summary>
+    private static IEnumerable<(double Start, double End)> ComputeWindowsRaw(BigFish fish, long nowUnix, int maxWindows)
+    {
         var periodStart = nowUnix - Mod(nowUnix, WeatherPeriodSeconds);
 
         double? windowStart = null;
-        double windowEnd = 0;
+        var windowEnd = 0d;
+        var found = 0;
 
-        for (var i = 0; i < MaxPeriods; i++)
+        for (var i = 0; i < MaxPeriods && found < maxWindows; i++)
         {
             var p = periodStart + i * WeatherPeriodSeconds;
             if (!PeriodMatches(fish, p))
             {
                 if (windowStart != null)
-                    break; // zusammenhängendes Fenster zu Ende
+                {
+                    yield return (windowStart.Value, windowEnd);
+                    found++;
+                    windowStart = null;
+                }
+
                 continue;
             }
 
@@ -77,16 +150,27 @@ public static class FishWindows
                 }
                 else
                 {
-                    return ToWindow(windowStart.Value, windowEnd);
+                    yield return (windowStart.Value, windowEnd);
+                    found++;
+                    if (found >= maxWindows)
+                        yield break;
+
+                    windowStart = segStart;
+                    windowEnd = segEnd;
                 }
             }
 
             // Fenster endet vor dem Periodenende - kein Anschluss an die nächste Periode möglich.
             if (windowStart != null && windowEnd < p + WeatherPeriodSeconds - 0.5)
-                break;
+            {
+                yield return (windowStart.Value, windowEnd);
+                found++;
+                windowStart = null;
+            }
         }
 
-        return windowStart == null ? null : ToWindow(windowStart.Value, windowEnd);
+        if (windowStart != null && found < maxWindows)
+            yield return (windowStart.Value, windowEnd);
     }
 
     private static FishWindow ToWindow(double startUnix, double endUnix) =>
