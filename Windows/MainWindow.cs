@@ -777,13 +777,6 @@ public class MainWindow : Window
             }
         }
 
-        // Etwas Luft VOR der ersten Zeile einer Karte, wenn sie (wie hier) mit einer Combobox statt
-        // einem Toggle beginnt (Nutzeranforderung: "erster Eintrag sitzt zu nah am oberen
-        // Kartenrand") - BeginCombo() liefert ein knapperes ItemRect als AlignTextToFramePadding()
-        // erwartet, wodurch der obere Rand der Karte (siehe ModernUi.EndCard) enger wirkt als der
-        // untere nach der letzten Zeile.
-        ImGui.Dummy(new Vector2(0f, 4f));
-
         var gearsets = GameActions.GetGearsets();
         var currentGearsetName = config.FisherGearsetIndex >= 0 ? GameActions.GetGearsetName(config.FisherGearsetIndex) : null;
         var gearsetLabel = currentGearsetName ?? Loc.T("Kein Preset ausgewählt", "No preset selected");
@@ -860,9 +853,6 @@ public class MainWindow : Window
 
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));
         ModernUi.BeginCard();
-
-        // Siehe Kommentar bei der Fischer-Preset-Combobox oben (identisches Problem/dieselbe Lösung).
-        ImGui.Dummy(new Vector2(0f, 4f));
 
         // Mount (Standard: Mount Roulette), mit Suchfeld.
         var rouletteLabel = Loc.T("Mount Roulette", "Mount Roulette");
