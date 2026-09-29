@@ -416,7 +416,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         }
 
         // Noch in der Angel-Haltung (z.B. vom vorherigen Fisch) - vor Teleport/Aufsitzen erst einholen.
-        if (state is State.SwitchingJobFirst or State.SpecialRoute or State.Teleporting or State.LifestreamMoving or State.Mounting && Plugin.Condition[ConditionFlag.Fishing])
+        // Bewusst JEDER Zustand außer Waiting/Fishing selbst (nicht nur die "klassischen" Reise-
+        // Zustände) - ist der nächste Fisch derselbe wie der gerade gemachte (identische Position),
+        // überspringt BeginTravelToTarget Teleport/Mounting komplett und geht direkt zu
+        // State.WaitingForZone (Nutzeranforderung: "soll trotzdem eingeholt werden") - mit der
+        // ursprünglich engen Zustandsliste hier wurde das nie erkannt, weil WaitingForZone (und die
+        // übrigen Nicht-Reise-Zwischenzustände) gar nicht erst geprüft wurden.
+        if (state is not (State.Waiting or State.Fishing) && Plugin.Condition[ConditionFlag.Fishing])
         {
             StatusText = Loc.T("Hole die Angel ein...", "Reeling in...");
             if (now - lastQuitAt > TimeSpan.FromSeconds(2))
@@ -660,6 +666,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         targetFishStartUtc = due.FishUtc;
         pathAttempts = 0;
         usedFallbackLanding = false;
+        autoHookPresetSwitchedForItemId = null;
         Plugin.Log.Info($"[FishingAutomation] Nächster Fisch: {FishName(target)} (Fenster {targetWindow.StartUtc:HH:mm:ss}-{targetWindow.EndUtc:HH:mm:ss} UTC).");
 
         // Nutzeranforderung: als ALLERERSTES (noch vor jedem Teleport/Sonderweg) auf das konfigurierte
@@ -715,7 +722,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         if (GameActions.IsFisher())
         {
             if (now - lastActionAt >= SettleDelay)
+            {
+                // Nutzeranforderung: das AutoHook-Preset des Ziel-Fischs schon HIER wechseln (nach dem
+                // Fischer-Wechsel, aber VOR dem Teleport in die Zone), nicht erst kurz vorm Auswerfen.
+                SwitchAutoHookPresetForTarget();
                 BeginTravelToTarget();
+            }
             return;
         }
 
@@ -734,6 +746,34 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         {
             StatusText = Loc.T("Konfiguriertes Fischer-Preset nicht gefunden - gestoppt.", "Configured Fisher preset not found - stopped.");
             Stop();
+        }
+    }
+
+    // Verhindert, dass SwitchAutoHookPresetForTarget bei jedem Tick in State.SwitchingJobFirst erneut
+    // auslöst, solange derselbe Fisch noch Ziel ist - null nach jeder neuen Zielwahl (UpdateWaiting/
+    // StartTest), damit ein neuer Fisch sein Preset wieder frisch gesetzt bekommt.
+    private uint? autoHookPresetSwitchedForItemId;
+
+    /// <summary>
+    /// Wählt das für den aktuellen Zielfisch hinterlegte AutoHook-Preset (Einstellungen -> Fischdaten)
+    /// - jetzt VOR dem Teleport in die Zielzone statt erst direkt vorm Auswerfen (Nutzeranforderung),
+    /// damit AutoHook das Preset schon während des Anflugs sicher übernommen hat.
+    /// </summary>
+    private void SwitchAutoHookPresetForTarget()
+    {
+        // "Fliege zum Fisch" (IsTest) fischt nie wirklich - AutoHook-Preset unangetastet lassen,
+        // genau wie vor dieser Änderung (die alte Stelle in UpdateStartingAutoHook wurde ohnehin nie
+        // im Testmodus erreicht).
+        if (IsTest || target == null || autoHookPresetSwitchedForItemId == target.ItemId)
+            return;
+
+        autoHookPresetSwitchedForItemId = target.ItemId;
+
+        var preset = plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(target.ItemId);
+        if (!string.IsNullOrEmpty(preset))
+        {
+            autoHookSetPreset.InvokeAction(preset);
+            Plugin.Log.Info($"[FishingAutomation] AutoHook-Preset '{preset}' gewählt (vor dem Teleport).");
         }
     }
 
@@ -1450,13 +1490,8 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
         StatusText = Loc.T("Starte AutoHook...", "Starting AutoHook...");
 
-        var preset = plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(target!.ItemId);
-        if (!string.IsNullOrEmpty(preset))
-        {
-            autoHookSetPreset.InvokeAction(preset);
-            Plugin.Log.Info($"[FishingAutomation] AutoHook-Preset '{preset}' gewählt.");
-        }
-
+        // Preset ist schon in UpdateSwitchingJobFirst gewählt worden (Nutzeranforderung: vor dem
+        // Teleport statt erst hier) - siehe SwitchAutoHookPresetForTarget.
         autoHookSetPluginState.InvokeAction(true);
         autoHookEnabledByUs = true;
 
