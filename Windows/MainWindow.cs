@@ -834,6 +834,21 @@ public class MainWindow : Window
             config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
         if (ImGui.IsItemDeactivatedAfterEdit())
             config.Save();
+
+        // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
+        // ShouldDesynthesizeNow/UpdateDesynthesizing. Rein nativ über AgentSalvage.SalvageItem, kein
+        // Fremd-Plugin nötig (Nutzeranforderung: "ich würde ungern Pandora Box als Required Plugin einbauen").
+        ModernUi.CardDivider();
+        var desynthesisAfterFishing = config.DesynthesisAfterFishing;
+        if (ModernUi.ToggleRow(Loc.T("Desynthesis nach dem Angeln", "Desynthesis after fishing"), ref desynthesisAfterFishing,
+                Loc.T(
+                    "Führe Desynthesis nach dem Angeln aus, wenn in den nächsten 10 Minuten kein Prep Timer beginnt.",
+                    "Perform desynthesis after fishing if no prep timer begins within the next 10 minutes.")))
+        {
+            config.DesynthesisAfterFishing = desynthesisAfterFishing;
+            config.Save();
+        }
+
         ModernUi.EndCard();
 
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));
@@ -1051,9 +1066,11 @@ public class MainWindow : Window
         }
 
         // "Position speichern" nur in der Dev-Version (als Dev-Plugin geladen) - zum Erfassen der
-        // Angel-Positionen (landen in Data/FishingPositions.json und damit beim nächsten Release bei allen).
+        // Angel-Positionen (landen in Data/FishingPositions.json und damit beim nächsten Release bei
+        // allen). "Fly to Fish" ebenfalls nur in der Dev-Version (Nutzeranforderung) - normale
+        // Spieler starten die Automation ohnehin über den Start-Button, nicht einzeln je Fisch.
         var isDev = Plugin.PluginInterface.IsDev;
-        var columnCount = isDev ? 10 : 9;
+        var columnCount = isDev ? 10 : 8;
         if (!ImGui.BeginTable("##BigFishTimers", columnCount, tableFlags))
             return;
 
@@ -1067,11 +1084,13 @@ public class MainWindow : Window
         ImGui.TableSetupColumn("##Uptime", ImGuiTableColumnFlags.WidthFixed, 80f);
         ImGui.TableSetupColumn("##PrepTimer", ImGuiTableColumnFlags.WidthFixed, 150f);
         ImGui.TableSetupColumn("##AutoHookPreset", ImGuiTableColumnFlags.WidthFixed, 210f);
-        ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
         if (isDev)
+        {
+            ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
             ImGui.TableSetupColumn("##SavePosition", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
+        }
         DrawTableHeader(new[] { (1, Loc.T("FISCH", "FISH")), (2, Loc.T("KÖDER", "BAIT")), (3, Loc.T("NÄCHSTES FENSTER", "NEXT WINDOW")), (4, Loc.T("DAUER", "DURATION")), (5, Loc.T("RARITÄT", "RARITY")), (6, "PREP TIMER"), (7, "AUTOHOOK PRESET") },
-            lastColumn: isDev ? 9 : 8, searchColumn: 1, drawSearchToggle: DrawFishSearchToggle);
+            lastColumn: isDev ? 9 : 7, searchColumn: 1, drawSearchToggle: DrawFishSearchToggle);
 
         // Das Suchfeld sitzt direkt UNTER der "FISCH"-Überschrift, in einer eigenen Zeile - dadurch
         // ist es automatisch genauso breit wie die Spalte selbst (SetNextItemWidth(-1) füllt immer
@@ -1242,11 +1261,11 @@ public class MainWindow : Window
             ImGui.TableNextColumn();
             DrawAutoHookPresetCombo(config, fish.ItemId, presetNames);
 
-            ImGui.TableNextColumn();
-            DrawFlyToFishButton(fish);
-
             if (isDev)
             {
+                ImGui.TableNextColumn();
+                DrawFlyToFishButton(fish);
+
                 ImGui.TableNextColumn();
                 ImGui.SetCursorPosX(ImGui.GetCursorPosX() - ImGui.GetStyle().ItemSpacing.X);
                 DrawSavePositionButton(fish);

@@ -35,6 +35,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         StartingAutoHook,
         Fishing,
         TestTourWaiting,
+        Desynthesizing,
     }
 
     private static readonly TimeSpan TeleportRetryInterval = TimeSpan.FromSeconds(5);
@@ -56,6 +57,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
     // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
     private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
+
+    // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
+    // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
+    private const int DesynthesisMinFreeMinutes = 10;
+    // Wartezeit zwischen zwei AgentSalvage.SalvageItem-Aufrufen (siehe GameActions.
+    // TryDesynthesizeStack) - die eigentliche Desynthese braucht eine kurze Animation, ein zu früher
+    // nächster Aufruf würde ins Leere laufen. Bewusst großzügig geschätzt, nicht live verifiziert -
+    // Kalibrierung nach erstem Test.
+    private static readonly TimeSpan DesynthesisStepInterval = TimeSpan.FromSeconds(4);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -193,6 +203,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
+
+    // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird. Enthält die noch
+    // abzuarbeitenden Fisch-Item-IDs (ein Eintrag je gefundenem Stack im Hauptinventar).
+    private List<uint>? desynthesisQueue;
+    private DateTime? desynthesisStepStartedAt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -369,6 +384,10 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         testTourPositions = null;
         testTourIndex = 0;
         activeSpecialRoute = null;
+
+        desynthesisQueue = null;
+        desynthesisStepStartedAt = null;
+
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
         Plugin.Log.Info("[FishingAutomation] Gestoppt.");
@@ -416,7 +435,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         }
 
         // Noch in der Angel-Haltung (z.B. vom vorherigen Fisch) - vor Teleport/Aufsitzen erst einholen.
-        if (state is State.SwitchingJobFirst or State.SpecialRoute or State.Teleporting or State.LifestreamMoving or State.Mounting && Plugin.Condition[ConditionFlag.Fishing])
+        // Bewusst JEDER Zustand außer Waiting/Fishing selbst (nicht nur die "klassischen" Reise-
+        // Zustände) - ist der nächste Fisch derselbe wie der gerade gemachte (identische Position),
+        // überspringt BeginTravelToTarget Teleport/Mounting komplett und geht direkt zu
+        // State.WaitingForZone (Nutzeranforderung: "soll trotzdem eingeholt werden") - mit der
+        // ursprünglich engen Zustandsliste hier wurde das nie erkannt, weil WaitingForZone (und die
+        // übrigen Nicht-Reise-Zwischenzustände) gar nicht erst geprüft wurden.
+        if (state is not (State.Waiting or State.Fishing) && Plugin.Condition[ConditionFlag.Fishing])
         {
             StatusText = Loc.T("Hole die Angel ein...", "Reeling in...");
             if (now - lastQuitAt > TimeSpan.FromSeconds(2))
@@ -476,6 +501,9 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 break;
             case State.TestTourWaiting:
                 UpdateTestTourWaiting(now);
+                break;
+            case State.Desynthesizing:
+                UpdateDesynthesizing(now);
                 break;
         }
     }
@@ -660,6 +688,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         targetFishStartUtc = due.FishUtc;
         pathAttempts = 0;
         usedFallbackLanding = false;
+        autoHookPresetSwitchedForItemId = null;
         Plugin.Log.Info($"[FishingAutomation] Nächster Fisch: {FishName(target)} (Fenster {targetWindow.StartUtc:HH:mm:ss}-{targetWindow.EndUtc:HH:mm:ss} UTC).");
 
         // Nutzeranforderung: als ALLERERSTES (noch vor jedem Teleport/Sonderweg) auf das konfigurierte
@@ -715,7 +744,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         if (GameActions.IsFisher())
         {
             if (now - lastActionAt >= SettleDelay)
+            {
+                // Nutzeranforderung: das AutoHook-Preset des Ziel-Fischs schon HIER wechseln (nach dem
+                // Fischer-Wechsel, aber VOR dem Teleport in die Zone), nicht erst kurz vorm Auswerfen.
+                SwitchAutoHookPresetForTarget();
                 BeginTravelToTarget();
+            }
             return;
         }
 
@@ -734,6 +768,34 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         {
             StatusText = Loc.T("Konfiguriertes Fischer-Preset nicht gefunden - gestoppt.", "Configured Fisher preset not found - stopped.");
             Stop();
+        }
+    }
+
+    // Verhindert, dass SwitchAutoHookPresetForTarget bei jedem Tick in State.SwitchingJobFirst erneut
+    // auslöst, solange derselbe Fisch noch Ziel ist - null nach jeder neuen Zielwahl (UpdateWaiting/
+    // StartTest), damit ein neuer Fisch sein Preset wieder frisch gesetzt bekommt.
+    private uint? autoHookPresetSwitchedForItemId;
+
+    /// <summary>
+    /// Wählt das für den aktuellen Zielfisch hinterlegte AutoHook-Preset (Einstellungen -> Fischdaten)
+    /// - jetzt VOR dem Teleport in die Zielzone statt erst direkt vorm Auswerfen (Nutzeranforderung),
+    /// damit AutoHook das Preset schon während des Anflugs sicher übernommen hat.
+    /// </summary>
+    private void SwitchAutoHookPresetForTarget()
+    {
+        // "Fliege zum Fisch" (IsTest) fischt nie wirklich - AutoHook-Preset unangetastet lassen,
+        // genau wie vor dieser Änderung (die alte Stelle in UpdateStartingAutoHook wurde ohnehin nie
+        // im Testmodus erreicht).
+        if (IsTest || target == null || autoHookPresetSwitchedForItemId == target.ItemId)
+            return;
+
+        autoHookPresetSwitchedForItemId = target.ItemId;
+
+        var preset = plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(target.ItemId);
+        if (!string.IsNullOrEmpty(preset))
+        {
+            autoHookSetPreset.InvokeAction(preset);
+            Plugin.Log.Info($"[FishingAutomation] AutoHook-Preset '{preset}' gewählt (vor dem Teleport).");
         }
     }
 
@@ -1450,13 +1512,8 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
         StatusText = Loc.T("Starte AutoHook...", "Starting AutoHook...");
 
-        var preset = plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(target!.ItemId);
-        if (!string.IsNullOrEmpty(preset))
-        {
-            autoHookSetPreset.InvokeAction(preset);
-            Plugin.Log.Info($"[FishingAutomation] AutoHook-Preset '{preset}' gewählt.");
-        }
-
+        // Preset ist schon in UpdateSwitchingJobFirst gewählt worden (Nutzeranforderung: vor dem
+        // Teleport statt erst hier) - siehe SwitchAutoHookPresetForTarget.
         autoHookSetPluginState.InvokeAction(true);
         autoHookEnabledByUs = true;
 
@@ -1523,7 +1580,73 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         target = null;
         targetPosition = null;
         activeSpecialRoute = null;
+
+        // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - nur nach
+        // einem ECHTEN Fischgang (nicht "Fliege zum Fisch"), und nur, wenn dafür auch wirklich Zeit
+        // ist (siehe ShouldDesynthesizeNow).
+        if (!IsTest && plugin.Configuration.DesynthesisAfterFishing && ShouldDesynthesizeNow())
+        {
+            SetState(State.Desynthesizing);
+            return;
+        }
+
         SetState(State.Waiting);
+    }
+
+    /// <summary>
+    /// Ob gerade genug Zeit für "Desynthesis nach dem Angeln" ist - kein angehakter Fisch mit Prep
+    /// Timer in den nächsten DesynthesisMinFreeMinutes Minuten (siehe Configuration.
+    /// DesynthesisAfterFishing-Beschreibung), UND mindestens ein Fisch im Hauptinventar liegt, der
+    /// sich überhaupt lohnt zu prüfen.
+    /// </summary>
+    private bool ShouldDesynthesizeNow()
+    {
+        var now = DateTime.UtcNow;
+        var nextPrepUtc = GetPlannedFish(now)
+            .Select(p => p.FishUtc)
+            .Where(t => t > now)
+            .OrderBy(t => t)
+            .Cast<DateTime?>()
+            .FirstOrDefault();
+
+        return nextPrepUtc == null || nextPrepUtc.Value - now >= TimeSpan.FromMinutes(DesynthesisMinFreeMinutes);
+    }
+
+    /// <summary>
+    /// Desynthetisiert nacheinander jeden im Hauptinventar liegenden Fisch-Stack, direkt über die
+    /// native Spielfunktion (AgentSalvage.SalvageItem, siehe GameActions.TryDesynthesizeStack) - kein
+    /// Fremd-Plugin wie PandorasBox nötig (Nutzeranforderung: "ich würde ungern Pandora Box als
+    /// Required Plugin einbauen... kannst du alle Fische im Inventar auslesen und einzeln desynthesis
+    /// nutzen"). Zwischen zwei Desynthetisierungen eine feste Wartezeit (siehe
+    /// DesynthesisStepInterval), da die eigentliche Desynthese eine kurze Animation braucht - danach
+    /// wird das native Fenster geschlossen (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
+    /// </summary>
+    private void UpdateDesynthesizing(DateTime now)
+    {
+        if (desynthesisQueue == null)
+        {
+            var fishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+            desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
+            Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
+        }
+
+        if (desynthesisStepStartedAt != null && now - desynthesisStepStartedAt.Value < DesynthesisStepInterval)
+            return;
+
+        if (desynthesisQueue.Count == 0)
+        {
+            GameActions.CloseDesynthesizeWindow();
+            desynthesisQueue = null;
+            desynthesisStepStartedAt = null;
+            SetState(State.Waiting);
+            return;
+        }
+
+        var itemId = desynthesisQueue[0];
+        desynthesisQueue.RemoveAt(0);
+        StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
+        GameActions.TryDesynthesizeStack(itemId);
+        desynthesisStepStartedAt = now;
     }
 
     // ---- Hilfen ----

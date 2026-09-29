@@ -5,7 +5,9 @@ using System.Numerics;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 
 namespace BigFishHelper;
@@ -325,5 +327,103 @@ public static class GameActions
         }
 
         return names;
+    }
+
+    // Die vier Haupttaschen - Ätherische/Armory/Ausrüstungs-"Taschen" bewusst NICHT durchsucht (Fische
+    // landen nie dort). Reihenfolge egal, da nur nach passenden ItemIds gesucht wird.
+    private static readonly InventoryType[] MainInventoryBags =
+    {
+        InventoryType.Inventory1, InventoryType.Inventory2, InventoryType.Inventory3, InventoryType.Inventory4,
+    };
+
+    /// <summary>
+    /// Alle im Hauptinventar liegenden Item-IDs aus der übergebenen Menge, je ein Eintrag PRO belegtem
+    /// Slot (ein Fisch über mehrere Stacks verteilt taucht also mehrfach auf) - für "Desynthesis nach
+    /// dem Angeln" (Nutzeranforderung: kein Fremd-Plugin nötig, native Alternative zu PandorasBox'
+    /// "Desynth All" über AgentSalvage.SalvageItem).
+    /// </summary>
+    public static unsafe List<uint> FindInventoryItemIds(IReadOnlySet<uint> itemIds)
+    {
+        var result = new List<uint>();
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+            return result;
+
+        foreach (var bag in MainInventoryBags)
+        {
+            var container = manager->GetInventoryContainer(bag);
+            if (container == null)
+                continue;
+
+            for (var i = 0; i < container->GetSize(); i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot != null && !slot->IsEmpty() && itemIds.Contains(slot->GetItemId()))
+                    result.Add(slot->GetItemId());
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Desynthetisiert EINEN vollen Stack eines Items im Hauptinventar über die native Spielfunktion
+    /// (AgentSalvage.SalvageItem) statt über ein Fremd-Plugin wie PandorasBox (Nutzeranforderung: "ich
+    /// würde ungern Pandora Box als Required Plugin einbauen"). Gibt false zurück, wenn das Item nicht
+    /// (mehr) im Hauptinventar liegt (z.B. schon verarbeitet). Best-effort: der dritte Parameter von
+    /// SalvageItem ist nicht dokumentiert und hier nicht live verifiziert (0 geraten, vermutlich "ohne
+    /// Rückfrage") - ebenso, ob zwischen zwei Aufrufen eine Wartezeit nötig ist (siehe
+    /// FishingAutomation.DesynthesisStepInterval).
+    /// </summary>
+    public static unsafe bool TryDesynthesizeStack(uint itemId)
+    {
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+            return false;
+
+        foreach (var bag in MainInventoryBags)
+        {
+            var container = manager->GetInventoryContainer(bag);
+            if (container == null)
+                continue;
+
+            for (var i = 0; i < container->GetSize(); i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->IsEmpty() || slot->GetItemId() != itemId)
+                    continue;
+
+                var agent = AgentSalvage.Instance();
+                if (agent == null)
+                    return false;
+
+                agent->SalvageItem(slot, (int)slot->GetQuantity(), 0);
+                Plugin.Log.Info($"[GameActions] Desynthetisiere Item #{itemId} (Menge {slot->GetQuantity()}).");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Native Desynthesis-Fenster (per FFXIVClientStructs-Struct-Namen verifiziert: AddonSalvageDialog/
+    // AddonSalvageResult/AddonSalvageAutoDialog/AddonSalvageItemSelector) - nicht live geprüft, ob
+    // wirklich alle vier bei "Desynthesis nach dem Angeln" auftauchen können.
+    private static readonly string[] SalvageAddonNames = { "SalvageDialog", "SalvageResult", "SalvageAutoDialog", "SalvageItemSelector" };
+
+    /// <summary>
+    /// Schließt alle nativen Desynthesis-Fenster, falls noch offen (Nutzeranforderung: nach
+    /// "Desynthesis nach dem Angeln" soll das Fenster geschlossen werden) - direktes Setzen von
+    /// IsVisible statt eines echten Close/Callback-Aufrufs, genau wie das Unterdrücken des
+    /// Kartenfensters bei anderen Automationen.
+    /// </summary>
+    public static unsafe void CloseDesynthesizeWindow()
+    {
+        foreach (var name in SalvageAddonNames)
+        {
+            var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName(name).Address;
+            if (addon != null && addon->IsVisible)
+                addon->IsVisible = false;
+        }
     }
 }
