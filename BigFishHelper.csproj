@@ -8,6 +8,8 @@
     <Description>Helps you catch Big Fish, working together with AutoHook.</Description>
     <RepoUrl>https://github.com/stoni89/big-fish-helper</RepoUrl>
     <Tags>fishing;bigfish;utility;bigfishhelper</Tags>
+    <!-- Icon im Dalamud-Plugin-Installer (Dev Plugins-Liste) statt Platzhalter - wird als URL geladen, deshalb der rohe GitHub-Link statt eines lokalen Pfads. -->
+    <IconUrl>https://raw.githubusercontent.com/stoni89/big-fish-helper/main/Data/icon.png</IconUrl>
   </PropertyGroup>
 
   <ItemGroup>
