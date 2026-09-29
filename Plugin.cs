@@ -3,6 +3,7 @@ using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using ECommons;
 using BigFishHelper.Windows;
 
 namespace BigFishHelper;
@@ -18,6 +19,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
 
     private const string CommandName = "/bigfish";
 
@@ -34,6 +36,10 @@ public sealed class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        // Für die NPC-Automatisierung von Sonderwegen (siehe SpecialRoutes.cs) - Talk/SelectString/
+        // SelectYesno-Addons klicken.
+        ECommonsMain.Init(PluginInterface, this);
+
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         Automation = new FishingAutomation(this);
@@ -70,5 +76,6 @@ public sealed class Plugin : IDalamudPlugin
         StatusOverlayWindow.Dispose();
         Automation.Dispose();
         CommandManager.RemoveHandler(CommandName);
+        ECommonsMain.Dispose();
     }
 }
