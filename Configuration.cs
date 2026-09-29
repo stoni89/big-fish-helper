@@ -43,8 +43,9 @@ public class Configuration : IPluginConfiguration
     public int AlwaysUpFishBackupTimerMinutes { get; set; } = 0;
 
     // Einstellungen -> Allgemein -> Angeln: nach dem Angeln (Fisch gefangen/Fenster vorbei) alle
-    // Fische desynthetisieren (PandorasBox "Desynth All"), aber nur, wenn dafür auch wirklich Zeit
-    // ist (Nutzeranforderung) - siehe FishingAutomation.ShouldDesynthesizeNow/UpdateDesynthesizing.
+    // Fische im Hauptinventar nativ desynthetisieren (AgentSalvage.SalvageItem, kein Fremd-Plugin
+    // nötig), aber nur, wenn dafür auch wirklich Zeit ist (Nutzeranforderung) - siehe
+    // FishingAutomation.ShouldDesynthesizeNow/UpdateDesynthesizing.
     public bool DesynthesisAfterFishing { get; set; } = false;
 
     // Einstellungen -> Allgemein -> Angeln: konfiguriertes Ausrüstungsset-Preset, auf das die

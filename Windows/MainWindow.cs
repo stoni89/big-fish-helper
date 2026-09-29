@@ -843,7 +843,8 @@ public class MainWindow : Window
             config.Save();
 
         // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
-        // ShouldDesynthesizeNow/UpdateDesynthesizing. Braucht PandorasBox (Desynth-All-Feature).
+        // ShouldDesynthesizeNow/UpdateDesynthesizing. Rein nativ über AgentSalvage.SalvageItem, kein
+        // Fremd-Plugin nötig (Nutzeranforderung: "ich würde ungern Pandora Box als Required Plugin einbauen").
         ModernUi.CardDivider();
         var desynthesisAfterFishing = config.DesynthesisAfterFishing;
         if (ModernUi.ToggleRow(Loc.T("Desynthesis nach dem Angeln", "Desynthesis after fishing"), ref desynthesisAfterFishing,
@@ -854,9 +855,6 @@ public class MainWindow : Window
             config.DesynthesisAfterFishing = desynthesisAfterFishing;
             config.Save();
         }
-
-        if (desynthesisAfterFishing && !GameActions.IsPandorasBoxAvailable() && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(Loc.T("PandorasBox nicht gefunden - bitte installieren.", "PandorasBox not found - please install it."));
 
         ModernUi.EndCard();
 

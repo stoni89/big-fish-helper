@@ -61,10 +61,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
     // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
     private const int DesynthesisMinFreeMinutes = 10;
-    // Bewusst großzügig geschätzt (PandorasBox' "Desynth All" braucht je nach Inventarfüllung
-    // unterschiedlich lange und meldet der Automation nicht, wann es fertig ist) - Kalibrierung nach
-    // erstem Live-Test.
-    private static readonly TimeSpan DesynthesisDuration = TimeSpan.FromSeconds(15);
+    // Wartezeit zwischen zwei AgentSalvage.SalvageItem-Aufrufen (siehe GameActions.
+    // TryDesynthesizeStack) - die eigentliche Desynthese braucht eine kurze Animation, ein zu früher
+    // nächster Aufruf würde ins Leere laufen. Bewusst großzügig geschätzt, nicht live verifiziert -
+    // Kalibrierung nach erstem Test.
+    private static readonly TimeSpan DesynthesisStepInterval = TimeSpan.FromSeconds(4);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -203,8 +204,10 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
 
-    // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird.
-    private DateTime? desynthesisStartedAt;
+    // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird. Enthält die noch
+    // abzuarbeitenden Fisch-Item-IDs (ein Eintrag je gefundenem Stack im Hauptinventar).
+    private List<uint>? desynthesisQueue;
+    private DateTime? desynthesisStepStartedAt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -382,12 +385,8 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         testTourIndex = 0;
         activeSpecialRoute = null;
 
-        // Mitten in "Desynthesis nach dem Angeln" gestoppt - PandorasBox nicht eingeschaltet lassen.
-        if (desynthesisStartedAt != null)
-        {
-            GameActions.SetPandorasBoxDesynthAll(false);
-            desynthesisStartedAt = null;
-        }
+        desynthesisQueue = null;
+        desynthesisStepStartedAt = null;
 
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
@@ -1597,14 +1596,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     /// <summary>
     /// Ob gerade genug Zeit für "Desynthesis nach dem Angeln" ist - kein angehakter Fisch mit Prep
     /// Timer in den nächsten DesynthesisMinFreeMinutes Minuten (siehe Configuration.
-    /// DesynthesisAfterFishing-Beschreibung). PandorasBox (Desynth-All-Feature) muss dafür installiert
-    /// und geladen sein.
+    /// DesynthesisAfterFishing-Beschreibung), UND mindestens ein Fisch im Hauptinventar liegt, der
+    /// sich überhaupt lohnt zu prüfen.
     /// </summary>
     private bool ShouldDesynthesizeNow()
     {
-        if (!GameActions.IsPandorasBoxAvailable())
-            return false;
-
         var now = DateTime.UtcNow;
         var nextPrepUtc = GetPlannedFish(now)
             .Select(p => p.FishUtc)
@@ -1617,29 +1613,40 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     }
 
     /// <summary>
-    /// Schaltet PandorasBox' "Desynth All"-Feature für DesynthesisDuration ein (verarbeitet in dieser
-    /// Zeit das ganze desynthetisierbare Inventar), dann wieder aus, und schließt anschließend das
-    /// native Desynthesis-Fenster, falls es noch offen ist (Nutzeranforderung: "danach soll das
-    /// Fenster geschlossen werden"). Best-effort: PandorasBox meldet der Automation nicht, wann es
-    /// fertig ist, daher eine feste (grob geschätzte) Wartezeit statt eines echten Fertig-Signals.
+    /// Desynthetisiert nacheinander jeden im Hauptinventar liegenden Fisch-Stack, direkt über die
+    /// native Spielfunktion (AgentSalvage.SalvageItem, siehe GameActions.TryDesynthesizeStack) - kein
+    /// Fremd-Plugin wie PandorasBox nötig (Nutzeranforderung: "ich würde ungern Pandora Box als
+    /// Required Plugin einbauen... kannst du alle Fische im Inventar auslesen und einzeln desynthesis
+    /// nutzen"). Zwischen zwei Desynthetisierungen eine feste Wartezeit (siehe
+    /// DesynthesisStepInterval), da die eigentliche Desynthese eine kurze Animation braucht - danach
+    /// wird das native Fenster geschlossen (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
     /// </summary>
     private void UpdateDesynthesizing(DateTime now)
     {
-        if (desynthesisStartedAt == null)
+        if (desynthesisQueue == null)
         {
-            StatusText = Loc.T("Desynthetisiere alle Fische...", "Desynthesizing all fish...");
-            GameActions.SetPandorasBoxDesynthAll(true);
-            desynthesisStartedAt = now;
+            var fishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+            desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
+            Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
+        }
+
+        if (desynthesisStepStartedAt != null && now - desynthesisStepStartedAt.Value < DesynthesisStepInterval)
+            return;
+
+        if (desynthesisQueue.Count == 0)
+        {
+            GameActions.CloseDesynthesizeWindow();
+            desynthesisQueue = null;
+            desynthesisStepStartedAt = null;
+            SetState(State.Waiting);
             return;
         }
 
-        if (now - desynthesisStartedAt.Value < DesynthesisDuration)
-            return;
-
-        GameActions.SetPandorasBoxDesynthAll(false);
-        GameActions.CloseDesynthesizeWindow();
-        desynthesisStartedAt = null;
-        SetState(State.Waiting);
+        var itemId = desynthesisQueue[0];
+        desynthesisQueue.RemoveAt(0);
+        StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
+        GameActions.TryDesynthesizeStack(itemId);
+        desynthesisStepStartedAt = now;
     }
 
     // ---- Hilfen ----
