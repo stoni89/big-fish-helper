@@ -225,6 +225,22 @@ public static class ModernUi
     }
 
     /// <summary>
+    /// Dünne horizontale Trennlinie ZWISCHEN mehreren Einstellungen innerhalb derselben Karte (z.B.
+    /// Mount-Auswahl und Sprint-Umschalter im "Anflug"-Block, Nutzeranforderung: "identisch wie beim
+    /// Explorer's Codex Plugin") - NICHT zu verwechseln mit der Linie in SectionHeader (die trennt
+    /// Titel/Hilfstext von den Karten darunter, nicht einzelne Zeilen INNERHALB einer Karte).
+    /// </summary>
+    public static void CardDivider()
+    {
+        ImGui.Dummy(new Vector2(0f, 8f));
+        var drawList = ImGui.GetWindowDrawList();
+        var min = ImGui.GetCursorScreenPos();
+        var width = ImGui.GetContentRegionAvail().X;
+        drawList.AddLine(min, min + new Vector2(width, 0f), ImGui.ColorConvertFloat4ToU32(CardBorder), 1f);
+        ImGui.Dummy(new Vector2(0f, 8f));
+    }
+
+    /// <summary>
     /// Kleine Zwischenüberschrift direkt über einer Karte (z.B. "Match intro" im Referenzdesign) -
     /// um CardMargin eingerückt, damit sie mit dem eingerückten Karteninhalt darunter fluchtet statt
     /// mit dem (weiter links liegenden) Kartenrand.

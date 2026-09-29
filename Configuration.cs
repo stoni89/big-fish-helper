@@ -12,6 +12,10 @@ public class Configuration : IPluginConfiguration
     // Mount zum Fliegen (Lumina-Mount-RowId) - 0 = Mount Roulette.
     public uint FlyingMountId { get; set; } = 0;
 
+    // Einstellungen -> Allgemein -> Anflug: Sprint (auf Abklingzeit) nutzen, solange man in einer Stadt
+    // zu Fuß unterwegs ist (kein Aufsitzen möglich) - siehe FishingAutomation.UpdateCitySprint.
+    public bool UseSprintInCities { get; set; } = true;
+
     // Öffnet beim Klick auf "Start" automatisch das kleine Status-Overlay (siehe StatusOverlayWindow).
     public bool ShowOverlayOnStart { get; set; } = false;
 
@@ -37,6 +41,12 @@ public class Configuration : IPluginConfiguration
     // verfügbare" Fische starten nur, wenn in den nächsten X Minuten kein Prep Timer eines NICHT
     // immer verfügbaren Fischs beginnt (0 = aus, Default) - siehe FishingAutomation.UpdateWaiting.
     public int AlwaysUpFishBackupTimerMinutes { get; set; } = 0;
+
+    // Einstellungen -> Allgemein -> Angeln: konfiguriertes Ausrüstungsset-Preset, auf das die
+    // Automation als ALLERERSTES wechselt, noch vor jedem Teleport (Nutzeranforderung) - siehe
+    // FishingAutomation.UpdateSwitchingJobFirst. -1 = noch keins ausgewählt (Start-Knopf bleibt dann
+    // deaktiviert, siehe MainWindow).
+    public int FisherGearsetIndex { get; set; } = -1;
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

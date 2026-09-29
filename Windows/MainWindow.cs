@@ -382,6 +382,14 @@ public class MainWindow : Window
         "Kein Fisch ausgewählt - hake unter Fischdaten mindestens einen Fisch an.",
         "No fish selected - enable at least one fish under Fish Data.");
 
+    private static string NoFisherPresetText => Loc.T(
+        "Kein Fischer Preset ausgewählt - siehe Einstellungen -> Allgemein -> Angeln.",
+        "No Fisher preset selected - see Settings -> General -> Fishing.");
+
+    private static string WrongFisherPresetClassText => Loc.T(
+        "Das ausgewählte Preset ist keine Fischer-Klasse - siehe Einstellungen -> Allgemein -> Angeln.",
+        "The selected preset isn't a Fisher class - see Settings -> General -> Fishing.");
+
     /// <summary>
     /// Start-Seite: großer Start-/Stop-Knopf, aktueller Status der Automation und die angehakten
     /// Fische in der Reihenfolge, in der sie drankommen (Abflug = Prep Time minus Vorlaufzeit, Angeln ab der Prep Time).
@@ -398,7 +406,10 @@ public class MainWindow : Window
         // Großer Start-/Stop-Knopf über die volle Breite.
         var running = automation.IsRunning;
         var missingPlugin = HasMissingRequiredDependency();
-        var disabled = !running && (!automation.HasEnabledFish || missingPlugin);
+        var fisherGearsetIndex = plugin.Configuration.FisherGearsetIndex;
+        var noFisherPreset = fisherGearsetIndex < 0;
+        var wrongFisherPresetClass = !noFisherPreset && !GameActions.IsGearsetFisher(fisherGearsetIndex);
+        var disabled = !running && (!automation.HasEnabledFish || missingPlugin || noFisherPreset || wrongFisherPresetClass);
         var buttonWidth = ImGui.GetContentRegionAvail().X - ModernUi.CardMargin;
         ImGui.Indent(ModernUi.CardMargin);
 
@@ -425,7 +436,11 @@ public class MainWindow : Window
         if (disabled && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(!automation.HasEnabledFish
                 ? NoFishSelectedText
-                : MissingPluginText);
+                : missingPlugin
+                    ? MissingPluginText
+                    : noFisherPreset
+                        ? NoFisherPresetText
+                        : WrongFisherPresetClassText);
 
         if (clicked)
         {
@@ -675,6 +690,7 @@ public class MainWindow : Window
     private const float CurrentSpotHighlightRadius = 3f;
 
     private string mountFilter = string.Empty;
+    private string gearsetFilter = string.Empty;
     private string fishSearchFilter = string.Empty;
     private bool fishSearchExpanded;
 
@@ -744,6 +760,82 @@ public class MainWindow : Window
 
         ModernUi.SectionHeader(Loc.T("Allgemein", "General"), Loc.T("Allgemeine Einstellungen der Automation.", "General settings of the automation."));
 
+        // Fischer-Preset (Nutzeranforderung): Ausrüstungsset, auf das die Automation als allererstes
+        // wechselt (siehe FishingAutomation.UpdateSwitchingJobFirst) - Default-Vorschlag, falls noch
+        // keins gewählt wurde, siehe GameActions.FindDefaultFisherGearsetIndex. Nutzeranforderung:
+        // ganz oben in den Allgemein-Einstellungen.
+        ModernUi.GroupLabel(Loc.T("Angeln", "Fishing"));
+        ModernUi.BeginCard();
+
+        if (config.FisherGearsetIndex < 0)
+        {
+            var defaultIndex = GameActions.FindDefaultFisherGearsetIndex();
+            if (defaultIndex >= 0)
+            {
+                config.FisherGearsetIndex = defaultIndex;
+                config.Save();
+            }
+        }
+
+        var gearsets = GameActions.GetGearsets();
+        var currentGearsetName = config.FisherGearsetIndex >= 0 ? GameActions.GetGearsetName(config.FisherGearsetIndex) : null;
+        var gearsetLabel = currentGearsetName ?? Loc.T("Kein Preset ausgewählt", "No preset selected");
+        // Rot markieren, wenn nichts ausgewählt ist ODER das gewählte Preset keine Fischer-Klasse ist
+        // (Nutzeranforderung: Start-Knopf auch dann sperren) - derselbe Bedingung wie beim Start-Knopf.
+        var invalidGearset = currentGearsetName == null || !GameActions.IsGearsetFisher(config.FisherGearsetIndex);
+        ModernUi.LabelRow(Loc.T("Fischer Preset", "Fisher preset"), 280f,
+            Loc.T(
+                "Ausrüstungsset, auf das die Automation als Erstes wechselt, noch vor jedem Teleport - ohne eine Fischer-Klasse hier lässt sich \"Start\" nicht klicken.",
+                "Gear set the automation switches to first, before any teleport - without a Fisher class here, \"Start\" can't be clicked."));
+        if (invalidGearset)
+            ImGui.PushStyleColor(ImGuiCol.Text, NotCaughtColor);
+        if (ImGui.BeginCombo("##FisherGearset", gearsetLabel))
+        {
+            if (invalidGearset)
+                ImGui.PopStyleColor();
+
+            ImGui.SetNextItemWidth(-1f);
+            ImGui.InputTextWithHint("##GearsetFilter", Loc.T("Gear Sets durchsuchen...", "Search gear sets..."), ref gearsetFilter, 100);
+
+            ImGui.BeginChild("##GearsetList", new Vector2(0f, 200f));
+            foreach (var (index, name, classJobAbbreviation) in gearsets)
+            {
+                var entryLabel = $"{name} ({classJobAbbreviation})";
+                if (!string.IsNullOrWhiteSpace(gearsetFilter) && !entryLabel.Contains(gearsetFilter, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (ImGui.Selectable($"{entryLabel}##gearset_{index}", config.FisherGearsetIndex == index))
+                {
+                    config.FisherGearsetIndex = index;
+                    config.Save();
+                }
+            }
+            ImGui.EndChild();
+
+            ImGui.EndCombo();
+        }
+        else if (invalidGearset)
+        {
+            ImGui.PopStyleColor();
+        }
+
+        // "Always Up Fish Backup Timer" (Nutzeranforderung) - siehe FishingAutomation.UpdateWaiting.
+        // Gleiche Karte wie das Fischer-Preset darüber (Nutzeranforderung: "Fish" und "Fishing"
+        // zusammenfassen, "Fishing" behalten).
+        ModernUi.CardDivider();
+        ModernUi.LabelRow(Loc.T("Always Up Fish Backup Timer", "Always Up Fish Backup Timer"), 220f,
+            Loc.T(
+                "Startet Always Up Fische nur, wenn in den nächsten X Minuten kein Prep Timer von nicht Always Up Fischen beginnt.",
+                "Only starts Always Up fish if no prep timer of a non-Always Up fish begins within the next X minutes."));
+        var backupTimerMinutes = config.AlwaysUpFishBackupTimerMinutes;
+        ImGui.SetNextItemWidth(220f);
+        var backupTimerFormat = backupTimerMinutes == 0 ? Loc.T("Aus", "Off") : Loc.T("%d Min.", "%d min");
+        if (ImGui.SliderInt("##AlwaysUpFishBackupTimer", ref backupTimerMinutes, 0, 120, backupTimerFormat))
+            config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
+        if (ImGui.IsItemDeactivatedAfterEdit())
+            config.Save();
+        ModernUi.EndCard();
+
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));
         ModernUi.BeginCard();
 
@@ -781,6 +873,17 @@ public class MainWindow : Window
             ImGui.EndCombo();
         }
 
+        ModernUi.CardDivider();
+        var useSprintInCities = config.UseSprintInCities;
+        if (ModernUi.ToggleRow(Loc.T("Sprint in Städten nutzen", "Use Sprint in cities"), ref useSprintInCities,
+                Loc.T(
+                    "Nutzt beim Zu-Fuß-Laufen in Städten (kein Aufsitzen möglich) Sprint, sobald es nicht auf Abklingzeit ist.",
+                    "Uses Sprint while walking on foot in cities (mounting not possible), whenever it's off cooldown.")))
+        {
+            config.UseSprintInCities = useSprintInCities;
+            config.Save();
+        }
+
         ModernUi.EndCard();
 
         ModernUi.GroupLabel(Loc.T("Overlay", "Overlay"));
@@ -794,22 +897,6 @@ public class MainWindow : Window
             config.ShowOverlayOnStart = showOverlayOnStart;
             config.Save();
         }
-        ModernUi.EndCard();
-
-        // "Always Up Fish Backup Timer" (Nutzeranforderung) - siehe FishingAutomation.UpdateWaiting.
-        ModernUi.GroupLabel(Loc.T("Fische", "Fish"));
-        ModernUi.BeginCard();
-        ModernUi.LabelRow(Loc.T("Always Up Fish Backup Timer", "Always Up Fish Backup Timer"), 220f,
-            Loc.T(
-                "Startet Always Up Fische nur, wenn in den nächsten X Minuten kein Prep Timer von nicht Always Up Fischen beginnt.",
-                "Only starts Always Up fish if no prep timer of a non-Always Up fish begins within the next X minutes."));
-        var backupTimerMinutes = config.AlwaysUpFishBackupTimerMinutes;
-        ImGui.SetNextItemWidth(220f);
-        var backupTimerFormat = backupTimerMinutes == 0 ? Loc.T("Aus", "Off") : Loc.T("%d Min.", "%d min");
-        if (ImGui.SliderInt("##AlwaysUpFishBackupTimer", ref backupTimerMinutes, 0, 120, backupTimerFormat))
-            config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
-        if (ImGui.IsItemDeactivatedAfterEdit())
-            config.Save();
         ModernUi.EndCard();
     }
 
@@ -1412,7 +1499,22 @@ public class MainWindow : Window
         // Kommentar oben) - Entfernen (siehe Rechtsklick-Menü/Umschalt+Klick weiter oben) bleibt
         // davon bewusst unberührt.
         if (!atCastablePosition || player == null)
+        {
+            // Diagnose nur bei tatsächlichem Klick (nicht pro Frame!) für "Position speichern nicht
+            // möglich, obwohl ich am Angelplatz stehe" (siehe ExtraCastablePositionRadius in
+            // FishingAutomation.cs) - liefert die Zahlen, um bei Bedarf einen weiteren Eintrag dort
+            // zu kalibrieren.
+            if (player != null && FishingPositionStore.GetSpotCircle(fish) is { } circle)
+            {
+                var playerXz = new Vector2(player.Position.X, player.Position.Z);
+                var distance = Vector2.Distance(playerXz, circle.Center);
+                Plugin.Log.Warning($"[DevTools] {name} (Item {fish.ItemId}): Speichern nicht möglich - außerhalb des "
+                    + $"Angelplatz-Radius (Abstand {distance:F1} Yalm, erlaubt {circle.Radius:F1} Yalm, Mittelpunkt "
+                    + $"{circle.Center.X:F1}/{circle.Center.Y:F1}, Spielerposition {playerXz.X:F1}/{playerXz.Y:F1}).");
+            }
+
             return;
+        }
 
         var position = player.Position;
         var facing = player.Rotation;

@@ -17,13 +17,16 @@ namespace BigFishHelper;
 /// auf Fischer, wählt in AutoHook das zugeordnete Preset und startet das Angeln. Endet das Fenster
 /// oder ist der Fisch gefangen, wird AutoHook wieder ausgeschaltet und auf den nächsten Fisch gewartet.
 /// </summary>
-public sealed class FishingAutomation : IDisposable
+public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 {
     private enum State
     {
         Waiting,
+        SwitchingJobFirst,
+        SpecialRoute,
         Teleporting,
         WaitingForZone,
+        LifestreamMoving,
         Mounting,
         Flying,
         Landing,
@@ -65,6 +68,86 @@ public sealed class FishingAutomation : IDisposable
     // der Angel-Position) statt als übliche kleine Navmesh-Ungenauigkeit - siehe UpdateExactPositioning.
     private const float ExactPositionFallbackDistance = 3f;
     private const int MaxExactPositionAttempts = 2;
+    private static readonly TimeSpan LifestreamMoveTimeout = TimeSpan.FromMinutes(2);
+    // Eigene, enge Ankunfts-Toleranz für UpdateLifestreamMoving (NICHT ArrivedDistance - das ist für
+    // die vnavmesh-Flugstrecke gedacht, wo danach noch UpdateExactPositioning nachkorrigiert; bei
+    // Lifestream gibt es das nicht, also muss schon dieser Wert nah genug sein) - siehe Nutzer-Report
+    // "hält zu viel Abstand".
+    private const float LifestreamArrivedDistance = 0.5f;
+
+    // Zonen, in denen vnavmesh laut Nutzer-Report kein (nutzbares) Navmesh hat - typischerweise
+    // Housing-Wards, deren Layout sich je Plot-Bebauung ändert. Dort NICHT die normale Mounting/
+    // Flying-Kette (vnavmesh) nutzen, sondern Lifestream.Move (siehe UpdateLifestreamMoving) - dasselbe
+    // Problem ist laut ToDo-Datei auch für Rhalgar's Reach und die Shiragane-Wohndistrikte zu
+    // erwarten, daher als offene Liste statt Einzelfall-Sonderlogik.
+    private static readonly HashSet<uint> NoVnavmeshTerritories = new()
+    {
+        340, // The Lavender Beds (Sweetnewt)
+        339, // Mist (Twitchbeard)
+        341, // The Goblet (Spearnose)
+        641, // Shirogane (The Gambler, Princess Killifish)
+        635, // Rhalgr's Reach (Watcher Catfish, Hookstealer, Bloodtail Zombie)
+    };
+
+    // Zonen, in denen der Lifestream-Laufweg GERITTEN werden soll (Nutzeranforderung: unebenes
+    // Gelände, z.B. Rhalgr's Reach) statt zu Fuß - Aufsitzen VOR dem ersten Lifestream.Move, Abmounten
+    // passiert bei Ankunft ohnehin immer generisch (siehe UpdateLifestreamMoving).
+    private static readonly HashSet<uint> MountedLifestreamTerritories = new()
+    {
+        635, // Rhalgr's Reach
+    };
+
+    // Der Ätherit-Ausstiegspunkt in Rhalgr's Reach variiert laut Nutzer-Report leicht von Teleport zu
+    // Teleport - diese beiden Punkte werden deshalb bei allen drei Rhalgr's-Reach-Fischen VOR den
+    // eigentlichen (festen) Wegpunkten angelaufen, um erst auf eine konsistente Startposition zu
+    // kommen, bevor der fischspezifische Laufweg beginnt. MUSS vor LifestreamWaypoints deklariert
+    // sein (wird in dessen Initialisierer verwendet - Feld-Initialisierer laufen in Deklarationsreihenfolge).
+    private static readonly Vector3[] RhalgrsReachStartPoints =
+    {
+        new(86.37602f, -0.3492136f, 107.377174f),
+        new(84.8895f, 0f, 91.56355f),
+    };
+
+    // Feste Zwischenstationen für den Lifestream-Laufweg (siehe UpdateLifestreamMoving), NUR für
+    // einzelne Fische nötig, bei denen der direkte Weg zur Angel-Position laut Nutzerangabe nicht
+    // funktioniert (z.B. Spearnose/The Goblet - vermutlich Gebäude/Gelände im Weg, das Lifestream
+    // ohne Navmesh nicht selbst umgeht). Werden VOR die eigentliche Angel-Position gehängt.
+    private static readonly Dictionary<uint, Vector3[]> LifestreamWaypoints = new()
+    {
+        [7919] = new[] { new Vector3(0.61495805f, -11.076664f, -194.34265f), new Vector3(0.17884374f, -8f, -129.46269f) }, // Spearnose
+        [24213] = new[]
+        {
+            new Vector3(-86.020096f, 2.02f, 102.60924f),
+            new Vector3(-62.210194f, 10.02f, 80.665565f),
+            new Vector3(-56.06963f, 16.887323f, 53.8396f),
+            new Vector3(-35.523052f, 20f, 28.485134f),
+        }, // Princess Killifish
+        [24205] = RhalgrsReachStartPoints.Concat(new[]
+        {
+            new Vector3(37.324318f, 0f, 17.430767f),
+            new Vector3(35.292522f, 0.04045081f, 1.2800725f),
+            new Vector3(14.768484f, 2.6970346f, -17.853266f),
+        }).ToArray(), // Watcher Catfish
+        [23057] = RhalgrsReachStartPoints.Concat(new[]
+        {
+            new Vector3(28.332716f, 0f, 57.453808f),
+            new Vector3(13.035299f, -1.5007828f, 69.959785f),
+            new Vector3(7.888316f, -1.6725466f, 128.37611f),
+        }).ToArray(), // Hookstealer
+        [24206] = RhalgrsReachStartPoints.Concat(new[]
+        {
+            new Vector3(28.979328f, 0f, 43.33499f),
+            new Vector3(60.43623f, -0.07421833f, -48.852127f),
+            new Vector3(151.27475f, 13.102413f, -96.31828f),
+            new Vector3(200.64041f, 13.56204f, -137.22559f),
+            new Vector3(156.1386f, 13.981321f, -166.29845f),
+            new Vector3(132.05241f, 14.471705f, -171.62215f),
+            new Vector3(100.20415f, 17.042236f, -203.42935f),
+            new Vector3(67.00642f, 20.399172f, -206.635f),
+            new Vector3(50.453716f, 24.25074f, -236.15698f),
+            new Vector3(50.412216f, 23.631207f, -249.45601f),
+        }).ToArray(), // Bloodtail Zombie
+    };
 
     private readonly Plugin plugin;
 
@@ -80,6 +163,20 @@ public sealed class FishingAutomation : IDisposable
     private readonly ICallGateSubscriber<bool, object> autoHookSetPluginState;
     private readonly ICallGateSubscriber<string, object> autoHookSetPreset;
     private readonly ICallGateSubscriber<uint, byte, bool> lifestreamTeleport;
+    // Für Aethernet-Kristalle (siehe SpecialRoutes.cs) - Lifestream.Teleport (Telepo, s.o.) findet NUR
+    // große Ätheriten, für einen Aethernet-Kristall braucht es diesen eigenen Lifestream-Befehl
+    // (übernimmt Zielen/Interagieren/Menüauswahl am nächsten Ätheriten selbst). Namentlich statt per
+    // Id (siehe SpecialRoutes.TickAethernetTeleport) - "nächster Kristall zu einer Weltposition" hatte
+    // laut Nutzer-Report gelegentlich den falschen (geometrisch näheren, aber zu Fuß weiter
+    // entfernten) Kristall getroffen.
+    private readonly ICallGateSubscriber<string, bool> lifestreamAethernetTeleportByName;
+    // Für Zonen ohne vnavmesh-Navmesh (siehe NoVnavmeshTerritories/UpdateLifestreamMoving) - Lifestream
+    // hat eine eigene, vnavmesh-unabhängige Laufweg-Logik (baut es selbst schon für Housing-Zwecke).
+    // MoveEx statt Move, um eine enge Toleranz mitzugeben - Lifestream.Move (ohne Toleranz) blieb laut
+    // Nutzer-Report zu weit von der Angel-Position entfernt stehen.
+    private readonly ICallGateSubscriber<List<Vector3>, bool?, float?, float?, object> lifestreamMoveEx;
+    private readonly ICallGateSubscriber<bool> lifestreamIsBusy;
+    private readonly ICallGateSubscriber<object> lifestreamAbort;
     private readonly ICallGateSubscriber<Vector3?> queryFlagToPoint;
     private readonly ICallGateSubscriber<Vector3, float, float, Vector3?> queryNearestPointReachable;
 
@@ -96,6 +193,12 @@ public sealed class FishingAutomation : IDisposable
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
+    private DateTime lastSprintAt = DateTime.MinValue;
+
+    // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
+    // z.B. Sweetnewt/The Lavender Beds nur per NPC-Fähre aus Old Gridania) - null = normaler Ablauf
+    // (Teleporting/WaitingForZone).
+    private SpecialRoute? activeSpecialRoute;
 
     // Ziel des aktuellen Laufwegs (eingetragene Angel-Position, oder - nur bei "Fliege zum Fisch"
     // ohne gespeicherte Position - der ungefähre Angelplatz) + Blickrichtung dort.
@@ -143,6 +246,10 @@ public sealed class FishingAutomation : IDisposable
         autoHookSetPluginState = pi.GetIpcSubscriber<bool, object>("AutoHook.SetPluginState");
         autoHookSetPreset = pi.GetIpcSubscriber<string, object>("AutoHook.SetPreset");
         lifestreamTeleport = pi.GetIpcSubscriber<uint, byte, bool>("Lifestream.Teleport");
+        lifestreamAethernetTeleportByName = pi.GetIpcSubscriber<string, bool>("Lifestream.AethernetTeleport");
+        lifestreamMoveEx = pi.GetIpcSubscriber<List<Vector3>, bool?, float?, float?, object>("Lifestream.MoveEx");
+        lifestreamIsBusy = pi.GetIpcSubscriber<bool>("Lifestream.IsBusy");
+        lifestreamAbort = pi.GetIpcSubscriber<object>("Lifestream.Abort");
         queryFlagToPoint = pi.GetIpcSubscriber<Vector3?>("vnavmesh.Query.Mesh.FlagToPoint");
         queryNearestPointReachable = pi.GetIpcSubscriber<Vector3, float, float, Vector3?>("vnavmesh.Query.Mesh.NearestPointReachable");
 
@@ -242,13 +349,9 @@ public sealed class FishingAutomation : IDisposable
         StatusText = Loc.T($"Fliege zu {FishName(fish)}...", $"Flying to {FishName(fish)}...");
         Plugin.Log.Info($"[FishingAutomation] Fliege zum Fisch: {FishName(fish)}.");
 
-        if (Plugin.ClientState.TerritoryType != fish.TerritoryId)
-            SetState(State.Teleporting);
-        else
-            // Über WaitingForZone statt direkt PrepareDestination(): dessen navmeshIsReady-Wartelogik
-            // gilt dann auch, wenn schon in der richtigen Zone gestartet wird (z.B. Mesh nach einem
-            // frischen Login/Zonenwechsel noch nicht generiert), siehe UpdateWaitingForZone.
-            SetState(State.WaitingForZone);
+        // Nutzeranforderung: "Fliege zum Fisch" wechselt jetzt genau wie die normale Automatik zuerst
+        // auf das konfigurierte Fischer-Preset (siehe UpdateSwitchingJobFirst/BeginTravelToTarget).
+        SetState(State.SwitchingJobFirst);
     }
 
     public void Stop()
@@ -259,11 +362,13 @@ public sealed class FishingAutomation : IDisposable
         IsRunning = false;
         IsTest = false;
         StopPath();
+        StopLifestreamMove();
         DisableAutoHook();
         target = null;
         targetPosition = null;
         testTourPositions = null;
         testTourIndex = 0;
+        activeSpecialRoute = null;
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
         Plugin.Log.Info("[FishingAutomation] Gestoppt.");
@@ -311,7 +416,7 @@ public sealed class FishingAutomation : IDisposable
         }
 
         // Noch in der Angel-Haltung (z.B. vom vorherigen Fisch) - vor Teleport/Aufsitzen erst einholen.
-        if (state is State.Teleporting or State.Mounting && Plugin.Condition[ConditionFlag.Fishing])
+        if (state is State.SwitchingJobFirst or State.SpecialRoute or State.Teleporting or State.LifestreamMoving or State.Mounting && Plugin.Condition[ConditionFlag.Fishing])
         {
             StatusText = Loc.T("Hole die Angel ein...", "Reeling in...");
             if (now - lastQuitAt > TimeSpan.FromSeconds(2))
@@ -322,16 +427,31 @@ public sealed class FishingAutomation : IDisposable
             return;
         }
 
+        // Einstellungen -> Allgemein -> "Sprint in Städten nutzen": nur während tatsächlicher
+        // Laufbewegung (Sonderweg/Aufsitzen-oder-Laufen/Fliegen-oder-Laufen) - beim Stehen an der
+        // Angel-Position o.ä. bringt Sprint nichts.
+        if (state is State.SpecialRoute or State.Mounting or State.Flying)
+            MaybeUseCitySprint(now);
+
         switch (state)
         {
             case State.Waiting:
                 UpdateWaiting(now);
+                break;
+            case State.SwitchingJobFirst:
+                UpdateSwitchingJobFirst(now);
+                break;
+            case State.SpecialRoute:
+                UpdateSpecialRoute(now);
                 break;
             case State.Teleporting:
                 UpdateTeleporting(now);
                 break;
             case State.WaitingForZone:
                 UpdateWaitingForZone(now);
+                break;
+            case State.LifestreamMoving:
+                UpdateLifestreamMoving(now);
                 break;
             case State.Mounting:
                 UpdateMounting(now);
@@ -425,6 +545,12 @@ public sealed class FishingAutomation : IDisposable
         // tatsächliche Stehposition (900.0, 118.7) ist davon aber ~107.7 Yalm entfernt, ~79 Yalm über
         // dem reinen Radius.
         [8753] = 95f,
+
+        // Blood Red Bonytongue (Singing Shards, Item-Id 8776): Mittelpunkt laut Spieldaten bei
+        // Weltposition (382.0, -558.0) mit Radius 85.7 Yalm - vom Nutzer gemeldete tatsächliche
+        // Stehposition (395.6, -697.2) ist davon aber ~139.9 Yalm entfernt, ~54 Yalm über dem reinen
+        // Radius.
+        [8776] = 70f,
     };
 
     public bool IsAtCastablePosition(BigFish fish)
@@ -536,12 +662,79 @@ public sealed class FishingAutomation : IDisposable
         usedFallbackLanding = false;
         Plugin.Log.Info($"[FishingAutomation] Nächster Fisch: {FishName(target)} (Fenster {targetWindow.StartUtc:HH:mm:ss}-{targetWindow.EndUtc:HH:mm:ss} UTC).");
 
-        if (Plugin.ClientState.TerritoryType != target.TerritoryId)
-            SetState(State.Teleporting);
-        else
+        // Nutzeranforderung: als ALLERERSTES (noch vor jedem Teleport/Sonderweg) auf das konfigurierte
+        // Fischer-Preset wechseln - siehe UpdateSwitchingJobFirst.
+        SetState(State.SwitchingJobFirst);
+    }
+
+    /// <summary>
+    /// Entscheidet, wie man von der aktuellen Position aus zum Fisch kommt (Sonderweg/Teleport/schon
+    /// da) - gemeinsam für UpdateWaiting UND StartTest ("Fliege zum Fisch"), beide laufen jetzt zuerst
+    /// über State.SwitchingJobFirst (Nutzeranforderung: auch der Testflug wechselt vorher auf das
+    /// konfigurierte Fischer-Preset).
+    /// </summary>
+    private void BeginTravelToTarget()
+    {
+        // Manche Zonen (z.B. Housing-Wards) sind nicht per Ätherit erreichbar, sondern nur über einen
+        // manuellen NPC-Laufweg (siehe SpecialRoutes.cs) - dieser übernimmt Teleport(s)/Laufweg/NPC
+        // selbst und mündet am Ende wieder in WaitingForZone. Manche Sonderwege (siehe
+        // SpecialRoute.AlwaysRun, z.B. Rhalgr's Reach) sollen auch dann laufen, wenn man schon in der
+        // Zielzone steht (Nutzeranforderung: fester Wegpunkt-Startpunkt) - deshalb erst danach fragen,
+        // ob man ohne Sonderweg schon am Ziel ist.
+        var route = SpecialRoutes.Get(target!, this);
+        if (route != null && (route.AlwaysRun || Plugin.ClientState.TerritoryType != target!.TerritoryId))
+        {
+            activeSpecialRoute = route;
+            route.Reset();
+            SetState(State.SpecialRoute);
+            return;
+        }
+
+        if (Plugin.ClientState.TerritoryType == target!.TerritoryId)
+        {
             // Siehe StartTest-Kommentar: über WaitingForZone, damit dessen navmeshIsReady-Wartelogik
             // auch ohne vorherigen Teleport greift.
             SetState(State.WaitingForZone);
+        }
+        else
+        {
+            SetState(State.Teleporting);
+        }
+    }
+
+    /// <summary>
+    /// Erzwingt VOR jedem Teleport/Sonderweg einen Wechsel auf das konfigurierte Fischer-Preset
+    /// (Einstellungen -> Allgemein -> Angeln, Nutzeranforderung) - der Start-Knopf lässt sich ohne
+    /// konfiguriertes Preset gar nicht erst drücken (siehe MainWindow), ein Fehlschlag hier bedeutet
+    /// also z.B. ein nachträglich gelöschtes Gear Set.
+    /// </summary>
+    private void UpdateSwitchingJobFirst(DateTime now)
+    {
+        StatusText = Loc.T("Wechsle auf Fischer...", "Switching to Fisher...");
+
+        if (GameActions.IsFisher())
+        {
+            if (now - lastActionAt >= SettleDelay)
+                BeginTravelToTarget();
+            return;
+        }
+
+        if (now - lastActionAt < JobSwitchTimeout)
+            return;
+
+        if (lastActionAt != DateTime.MinValue && now - stateEnteredAt > JobSwitchTimeout * 3)
+        {
+            StatusText = Loc.T("Konfiguriertes Fischer-Preset nicht gefunden - gestoppt.", "Configured Fisher preset not found - stopped.");
+            Stop();
+            return;
+        }
+
+        lastActionAt = now;
+        if (!GameActions.EquipGearset(plugin.Configuration.FisherGearsetIndex))
+        {
+            StatusText = Loc.T("Konfiguriertes Fischer-Preset nicht gefunden - gestoppt.", "Configured Fisher preset not found - stopped.");
+            Stop();
+        }
     }
 
     /// <summary>
@@ -559,7 +752,7 @@ public sealed class FishingAutomation : IDisposable
         {
             destination = known.Position;
             destinationFacing = known.Facing;
-            SetState(State.Mounting);
+            SetState(NoVnavmeshTerritories.Contains(target!.TerritoryId) ? State.LifestreamMoving : State.Mounting);
             return;
         }
 
@@ -597,6 +790,119 @@ public sealed class FishingAutomation : IDisposable
         destinationFacing = null;
         Plugin.Log.Info($"[FishingAutomation] Keine Angel-Position für {FishName(target)} gespeichert - fliege ungefähr zu {destination}.");
         SetState(State.Mounting);
+    }
+
+    // ---- Sonderweg (siehe SpecialRoutes.cs) ----
+
+    private static readonly TimeSpan SpecialRouteTimeout = TimeSpan.FromMinutes(3);
+
+    private void UpdateSpecialRoute(DateTime now)
+    {
+        if (activeSpecialRoute is not { } route)
+        {
+            // Kann eigentlich nicht passieren (siehe UpdateWaiting/StartTest) - sicherheitshalber
+            // trotzdem normal weitermachen, statt hängen zu bleiben.
+            SetState(State.Teleporting);
+            return;
+        }
+
+        if (now - stateEnteredAt > SpecialRouteTimeout)
+        {
+            StatusText = Loc.T($"Sonderweg zu {FishName(target!)} abgebrochen (Timeout).", $"Special route to {FishName(target!)} aborted (timeout).");
+            Stop();
+            return;
+        }
+
+        StatusText = route.StatusText;
+
+        switch (route.Tick(now))
+        {
+            case SpecialRouteStepResult.InProgress:
+                break;
+            case SpecialRouteStepResult.Done:
+                activeSpecialRoute = null;
+                Plugin.Log.Info($"[FishingAutomation] Sonderweg zu {FishName(target!)} abgeschlossen.");
+                SetState(State.WaitingForZone);
+                break;
+            case SpecialRouteStepResult.Failed:
+                activeSpecialRoute = null;
+                StatusText = Loc.T($"Sonderweg zu {FishName(target!)} fehlgeschlagen - gestoppt.", $"Special route to {FishName(target!)} failed - stopped.");
+                Stop();
+                break;
+        }
+    }
+
+    // ---- ISpecialRouteHost: gemeinsame Teleport-/Laufweg-Grundlage für Sonderwege, damit diese
+    // dieselben vnavmesh-/Lifestream-Verbindungen nutzen statt eigene zu öffnen. ----
+
+    bool ISpecialRouteHost.TeleportToAetheryte(uint aetheryteId) =>
+        TeleportViaLifestream(aetheryteId) || GameActions.Teleport(aetheryteId);
+
+    // Aethernet-Kristall (siehe SpecialRoutes.cs) - NUR über Lifestream möglich (übernimmt Zielen/
+    // Interagieren am nächstgelegenen Ätheriten + Menüauswahl selbst); der native Teleport (Telepo)
+    // kennt nur große Ätheriten, ein Fallback darauf würde hier also nie funktionieren.
+    bool ISpecialRouteHost.TeleportToAethernetShardByName(string placeName)
+    {
+        try
+        {
+            return lifestreamAethernetTeleportByName.HasFunction && lifestreamAethernetTeleportByName.InvokeFunc(placeName);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] Lifestream.AethernetTeleport fehlgeschlagen.");
+            return false;
+        }
+    }
+
+    bool ISpecialRouteHost.BeginWalkTo(Vector3 destination) =>
+        pathfindAndMoveCloseTo.InvokeFunc(destination, false, ArrivalTolerance);
+
+    bool ISpecialRouteHost.IsWalkRunning() => pathIsRunning.InvokeFunc();
+
+    bool ISpecialRouteHost.IsNavmeshReady() => navmeshIsReady.InvokeFunc();
+
+    bool ISpecialRouteHost.IsLifestreamBusy()
+    {
+        try
+        {
+            return lifestreamIsBusy.HasFunction && lifestreamIsBusy.InvokeFunc();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] Lifestream.IsBusy fehlgeschlagen.");
+            return false;
+        }
+    }
+
+    void ISpecialRouteHost.BeginLifestreamMoveTo(Vector3 destination)
+    {
+        try
+        {
+            lifestreamMoveEx.InvokeAction(new List<Vector3> { destination }, null, LifestreamArrivedDistance, null);
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] Lifestream.MoveEx (Sonderweg) fehlgeschlagen.");
+        }
+    }
+
+    // Wie UpdateExactPositioning (vnavmesh.Path.MoveTo) - läuft geradeaus zum Punkt OHNE Pathfinding-
+    // Validierung, funktioniert deshalb auch für ein Ziel knapp jenseits einer Zonengrenze, das
+    // pathfindAndMoveCloseTo sonst als "außerhalb der Zone" ablehnen würde (siehe ZoneCrossingRoute).
+    void ISpecialRouteHost.BeginDirectMoveTo(Vector3 destination) =>
+        moveToPath.InvokeAction(new List<Vector3> { destination }, false);
+
+    void ISpecialRouteHost.StopWalk()
+    {
+        try
+        {
+            if (pathStop.HasAction)
+                pathStop.InvokeAction();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] vnavmesh Path.Stop (Sonderweg) fehlgeschlagen.");
+        }
     }
 
     // ---- Teleport in die Zone ----
@@ -657,7 +963,13 @@ public sealed class FishingAutomation : IDisposable
             // (Nutzer-Report: Automation stoppte direkt nach dem Teleport, statt kurz danach zum Fisch
             // weiterzufliegen). Deshalb hier abwarten, bis vnavmesh bereit ist - MeshReadyTimeout
             // bleibt dabei die (großzügig bemessene) Notbremse, falls es nie bereit wird.
-            if (!navmeshIsReady.InvokeFunc() && now - stateEnteredAt < MeshReadyTimeout)
+            //
+            // Zonen ohne vnavmesh-Navmesh (siehe NoVnavmeshTerritories) NIE abwarten - dort wird
+            // ohnehin nicht vnavmesh, sondern Lifestream.Move genutzt (PrepareDestination setzt dann
+            // State.LifestreamMoving statt Mounting) - würde sonst bis MeshReadyTimeout (8 Minuten)
+            // unnötig hängen, weil dort nie ein Navmesh bereit wird.
+            if (!NoVnavmeshTerritories.Contains(target.TerritoryId)
+                && !navmeshIsReady.InvokeFunc() && now - stateEnteredAt < MeshReadyTimeout)
             {
                 StatusText = Loc.T("Warte auf vnavmesh-Navmesh für diese Zone...", "Waiting for vnavmesh's navmesh for this zone...");
                 return;
@@ -670,6 +982,96 @@ public sealed class FishingAutomation : IDisposable
         // Teleport abgebrochen (z.B. unterbrochen) - erneut versuchen.
         if (now - stateEnteredAt > ZoneTimeout || (!Plugin.Condition[ConditionFlag.Casting] && now - stateEnteredAt > TimeSpan.FromSeconds(10)))
             SetState(State.Teleporting);
+    }
+
+    /// <summary>
+    /// Laufweg per Lifestream statt vnavmesh (siehe NoVnavmeshTerritories) - für Zonen wie Housing-
+    /// Wards, in denen vnavmesh laut Nutzer-Report kein nutzbares Navmesh hat. Kein Mounting/Flying
+    /// nötig (Housing-Wards sind klein genug, ohne Mount) - direkt zur gespeicherten Position; danach
+    /// (siehe unten) noch wie bei der normalen UpdateLanding abmounten + Blickrichtung setzen, bevor es
+    /// wie gewohnt über ArrivedAtFishingPosition weitergeht.
+    /// </summary>
+    private void UpdateLifestreamMoving(DateTime now)
+    {
+        StatusText = Loc.T($"Laufe zu {FishName(target!)} (Lifestream)...", $"Walking to {FishName(target!)} (Lifestream)...");
+
+        var player = Plugin.ObjectTable.LocalPlayer;
+        if (player == null)
+            return;
+
+        if (Vector3.Distance(player.Position, destination) <= LifestreamArrivedDistance)
+        {
+            StopLifestreamMove();
+
+            // Wie UpdateLanding: erst abmounten (falls Lifestream/Mount Roulette aufgesessen ist),
+            // danach kurz absetzen lassen, dann erst die Blickrichtung setzen - sonst schlägt
+            // Face()/Auswerfen fehl bzw. dreht sich noch während des Absteigens wieder zurück.
+            if (Plugin.Condition[ConditionFlag.Mounted])
+            {
+                if (now - lastActionAt > DismountRetryInterval)
+                {
+                    lastActionAt = now;
+                    GameActions.Dismount();
+                }
+
+                stateEnteredAt = now;
+                return;
+            }
+
+            if (now - stateEnteredAt < SettleDelay || Plugin.Condition[ConditionFlag.Jumping])
+                return;
+
+            FaceWater();
+            Plugin.Log.Info($"[FishingAutomation] Angel-Position von {FishName(target!)} per Lifestream erreicht.");
+            ArrivedAtFishingPosition();
+            return;
+        }
+
+        // Manche Zonen (z.B. Rhalgr's Reach - Nutzeranforderung) sollen für den Lifestream-Laufweg
+        // GERITTEN werden (unebenes Gelände) statt zu Fuß - erst aufsitzen, bevor überhaupt losgelaufen
+        // wird. Abmounten passiert bereits oben generisch bei Ankunft, unabhängig von dieser Liste.
+        if (MountedLifestreamTerritories.Contains(target!.TerritoryId) && !Plugin.Condition[ConditionFlag.Mounted])
+        {
+            StatusText = Loc.T("Steige auf...", "Mounting...");
+            if (now - lastActionAt > MountRetryInterval && !Plugin.Condition[ConditionFlag.Casting])
+            {
+                lastActionAt = now;
+                GameActions.Mount(plugin.Configuration.FlyingMountId);
+            }
+
+            return;
+        }
+
+        if (now - stateEnteredAt > LifestreamMoveTimeout)
+        {
+            // KEIN TryFallbackLanding hier - das sucht über vnavmesh (queryNearestPointReachable)
+            // nach einer Ausweichposition, was in einer Zone ohne Navmesh (siehe
+            // NoVnavmeshTerritories) ebenso wenig funktioniert wie der ursprüngliche Laufweg.
+            //
+            // IsTest ("Fliege zum Fisch") MUSS über FinishTest laufen, nicht Finish - Finish setzt
+            // IsRunning/IsTest NICHT zurück (gedacht für den normalen Automatik-Flow, der zum
+            // nächsten Fisch weitergeht) - sonst bleibt IsRunning true hängen und sperrt laut
+            // Nutzer-Report ALLE "Fliege zum Fisch"-Knöpfe (TestTarget wird null, IsRunning bleibt
+            // true -> mainRunning in MainWindow.DrawFlyToFishButton wird fälschlich true).
+            var message = Loc.T(
+                $"Lifestream-Laufweg zu {FishName(target!)} nach {LifestreamMoveTimeout.TotalSeconds:F0}s nicht angekommen.",
+                $"Lifestream movement to {FishName(target!)} did not arrive after {LifestreamMoveTimeout.TotalSeconds:F0}s.");
+            if (IsTest)
+                FinishTest(message);
+            else
+                Finish(message);
+            return;
+        }
+
+        if (lastActionAt == DateTime.MinValue || (!lifestreamIsBusy.InvokeFunc() && now - lastActionAt > MountRetryInterval))
+        {
+            lastActionAt = now;
+            var waypoints = LifestreamWaypoints.TryGetValue(target!.ItemId, out var extra)
+                ? extra.Append(destination).ToList()
+                : new List<Vector3> { destination };
+            lifestreamMoveEx.InvokeAction(waypoints, null, LifestreamArrivedDistance, null);
+            Plugin.Log.Info($"[FishingAutomation] Lifestream.MoveEx über {waypoints.Count} Punkt(e) zu {destination} (Toleranz {LifestreamArrivedDistance:F1}) ausgelöst.");
+        }
     }
 
     // ---- Hinfliegen ----
@@ -1015,9 +1417,9 @@ public sealed class FishingAutomation : IDisposable
         }
 
         lastActionAt = now;
-        if (!GameActions.EquipFisherGearset())
+        if (!GameActions.EquipGearset(plugin.Configuration.FisherGearsetIndex))
         {
-            StatusText = Loc.T("Kein Ausrüstungsset für Fischer gefunden - gestoppt.", "No Fisher gear set found - stopped.");
+            StatusText = Loc.T("Konfiguriertes Fischer-Preset nicht gefunden - gestoppt.", "Configured Fisher preset not found - stopped.");
             Stop();
         }
     }
@@ -1096,14 +1498,31 @@ public sealed class FishingAutomation : IDisposable
             GameActions.Face(facing);
     }
 
+    // Einstellungen -> Allgemein -> "Sprint in Städten nutzen" (Nutzeranforderung) - Sprint hat selbst
+    // eine Abklingzeit über die Wirkdauer hinweg, GameActions.CanSprint prüft das schon, deshalb reicht
+    // ein grobes Zeit-Throttle hier nur, um nicht jeden Frame unnötig GetActionStatus abzufragen.
+    private static readonly TimeSpan SprintCheckInterval = TimeSpan.FromSeconds(1);
+
+    private void MaybeUseCitySprint(DateTime now)
+    {
+        if (!plugin.Configuration.UseSprintInCities || now - lastSprintAt < SprintCheckInterval)
+            return;
+
+        lastSprintAt = now;
+        if (!Plugin.Condition[ConditionFlag.Mounted] && !GameActions.CanMountHere() && GameActions.CanSprint())
+            GameActions.Sprint();
+    }
+
     private void Finish(string message)
     {
         Plugin.Log.Info($"[FishingAutomation] {message}");
         StopPath();
+        StopLifestreamMove();
         DisableAutoHook();
         StatusText = message;
         target = null;
         targetPosition = null;
+        activeSpecialRoute = null;
         SetState(State.Waiting);
     }
 
@@ -1134,6 +1553,20 @@ public sealed class FishingAutomation : IDisposable
         catch (Exception ex)
         {
             Plugin.Log.Warning(ex, "[FishingAutomation] vnavmesh-Stop fehlgeschlagen.");
+        }
+    }
+
+    /// <summary>Lifestream.Abort (siehe UpdateLifestreamMoving) - auch bei Stop()/Finish() aufrufen, sonst läuft Lifestream nach einem Abbruch einfach weiter.</summary>
+    private void StopLifestreamMove()
+    {
+        try
+        {
+            if (lifestreamAbort.HasAction)
+                lifestreamAbort.InvokeAction();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[FishingAutomation] Lifestream.Abort fehlgeschlagen.");
         }
     }
 
