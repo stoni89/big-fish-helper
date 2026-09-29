@@ -841,6 +841,23 @@ public class MainWindow : Window
             config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
         if (ImGui.IsItemDeactivatedAfterEdit())
             config.Save();
+
+        // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
+        // ShouldDesynthesizeNow/UpdateDesynthesizing. Braucht PandorasBox (Desynth-All-Feature).
+        ModernUi.CardDivider();
+        var desynthesisAfterFishing = config.DesynthesisAfterFishing;
+        if (ModernUi.ToggleRow(Loc.T("Desynthesis nach dem Angeln", "Desynthesis after fishing"), ref desynthesisAfterFishing,
+                Loc.T(
+                    "Führe Desynthesis nach dem Angeln aus, wenn in den nächsten 10 Minuten kein Prep Timer beginnt.",
+                    "Perform desynthesis after fishing if no prep timer begins within the next 10 minutes.")))
+        {
+            config.DesynthesisAfterFishing = desynthesisAfterFishing;
+            config.Save();
+        }
+
+        if (desynthesisAfterFishing && !GameActions.IsPandorasBoxAvailable() && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(Loc.T("PandorasBox nicht gefunden - bitte installieren.", "PandorasBox not found - please install it."));
+
         ModernUi.EndCard();
 
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));

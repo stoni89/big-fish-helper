@@ -6,6 +6,7 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Misc;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
 
 namespace BigFishHelper;
@@ -325,5 +326,41 @@ public static class GameActions
         }
 
         return names;
+    }
+
+    private const string PandorasBoxInternalName = "PandorasBox";
+
+    // Genauer Anzeigename des Features in PandorasBox' eigener Feature-Liste (Klassenname "DesynthAll"
+    // per Reflektieren der DLL ermittelt, siehe Nutzer-Report "Pandora Box hat die Funktion desynth
+    // all") - PandorasBox schaltet ein Feature über den Chat-Befehl `/pandora "<Anzeigename>" on/off`.
+    // Nicht live verifiziert (kein Spielzugriff hier) - falls der genaue Anzeigename doch abweicht,
+    // muss dieser String nach einem ersten Test angepasst werden.
+    private const string DesynthAllFeatureName = "Desynth All";
+
+    /// <summary>Ob PandorasBox installiert und geladen ist - Voraussetzung für "Desynthesis nach dem Angeln".</summary>
+    public static bool IsPandorasBoxAvailable() =>
+        Plugin.PluginInterface.InstalledPlugins.Any(p => p.InternalName == PandorasBoxInternalName && p.IsLoaded);
+
+    /// <summary>Schaltet PandorasBox' "Desynth All"-Feature explizit ein/aus - siehe DesynthAllFeatureName-Kommentar.</summary>
+    public static void SetPandorasBoxDesynthAll(bool enabled)
+    {
+        if (!IsPandorasBoxAvailable())
+            return;
+
+        Plugin.CommandManager.ProcessCommand($"/pandora \"{DesynthAllFeatureName}\" {(enabled ? "on" : "off")}");
+        Plugin.Log.Info($"[GameActions] PandorasBox '{DesynthAllFeatureName}' {(enabled ? "aktiviert" : "deaktiviert")}.");
+    }
+
+    /// <summary>
+    /// Schließt das native Desynthesis-Fenster, falls es gerade offen ist (Nutzeranforderung: nach
+    /// "Desynthesis nach dem Angeln" soll das Fenster geschlossen werden) - direktes Setzen von
+    /// IsVisible statt eines echten Close/Callback-Aufrufs, genau wie das Unterdrücken des
+    /// Kartenfensters bei anderen Automationen.
+    /// </summary>
+    public static unsafe void CloseDesynthesizeWindow()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("Desynthesize").Address;
+        if (addon != null && addon->IsVisible)
+            addon->IsVisible = false;
     }
 }

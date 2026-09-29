@@ -35,6 +35,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         StartingAutoHook,
         Fishing,
         TestTourWaiting,
+        Desynthesizing,
     }
 
     private static readonly TimeSpan TeleportRetryInterval = TimeSpan.FromSeconds(5);
@@ -56,6 +57,14 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
     // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
     private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
+
+    // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
+    // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
+    private const int DesynthesisMinFreeMinutes = 10;
+    // Bewusst großzügig geschätzt (PandorasBox' "Desynth All" braucht je nach Inventarfüllung
+    // unterschiedlich lange und meldet der Automation nicht, wann es fertig ist) - Kalibrierung nach
+    // erstem Live-Test.
+    private static readonly TimeSpan DesynthesisDuration = TimeSpan.FromSeconds(15);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -193,6 +202,9 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
+
+    // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird.
+    private DateTime? desynthesisStartedAt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -369,6 +381,14 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         testTourPositions = null;
         testTourIndex = 0;
         activeSpecialRoute = null;
+
+        // Mitten in "Desynthesis nach dem Angeln" gestoppt - PandorasBox nicht eingeschaltet lassen.
+        if (desynthesisStartedAt != null)
+        {
+            GameActions.SetPandorasBoxDesynthAll(false);
+            desynthesisStartedAt = null;
+        }
+
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
         Plugin.Log.Info("[FishingAutomation] Gestoppt.");
@@ -482,6 +502,9 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 break;
             case State.TestTourWaiting:
                 UpdateTestTourWaiting(now);
+                break;
+            case State.Desynthesizing:
+                UpdateDesynthesizing(now);
                 break;
         }
     }
@@ -1558,6 +1581,64 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         target = null;
         targetPosition = null;
         activeSpecialRoute = null;
+
+        // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - nur nach
+        // einem ECHTEN Fischgang (nicht "Fliege zum Fisch"), und nur, wenn dafür auch wirklich Zeit
+        // ist (siehe ShouldDesynthesizeNow).
+        if (!IsTest && plugin.Configuration.DesynthesisAfterFishing && ShouldDesynthesizeNow())
+        {
+            SetState(State.Desynthesizing);
+            return;
+        }
+
+        SetState(State.Waiting);
+    }
+
+    /// <summary>
+    /// Ob gerade genug Zeit für "Desynthesis nach dem Angeln" ist - kein angehakter Fisch mit Prep
+    /// Timer in den nächsten DesynthesisMinFreeMinutes Minuten (siehe Configuration.
+    /// DesynthesisAfterFishing-Beschreibung). PandorasBox (Desynth-All-Feature) muss dafür installiert
+    /// und geladen sein.
+    /// </summary>
+    private bool ShouldDesynthesizeNow()
+    {
+        if (!GameActions.IsPandorasBoxAvailable())
+            return false;
+
+        var now = DateTime.UtcNow;
+        var nextPrepUtc = GetPlannedFish(now)
+            .Select(p => p.FishUtc)
+            .Where(t => t > now)
+            .OrderBy(t => t)
+            .Cast<DateTime?>()
+            .FirstOrDefault();
+
+        return nextPrepUtc == null || nextPrepUtc.Value - now >= TimeSpan.FromMinutes(DesynthesisMinFreeMinutes);
+    }
+
+    /// <summary>
+    /// Schaltet PandorasBox' "Desynth All"-Feature für DesynthesisDuration ein (verarbeitet in dieser
+    /// Zeit das ganze desynthetisierbare Inventar), dann wieder aus, und schließt anschließend das
+    /// native Desynthesis-Fenster, falls es noch offen ist (Nutzeranforderung: "danach soll das
+    /// Fenster geschlossen werden"). Best-effort: PandorasBox meldet der Automation nicht, wann es
+    /// fertig ist, daher eine feste (grob geschätzte) Wartezeit statt eines echten Fertig-Signals.
+    /// </summary>
+    private void UpdateDesynthesizing(DateTime now)
+    {
+        if (desynthesisStartedAt == null)
+        {
+            StatusText = Loc.T("Desynthetisiere alle Fische...", "Desynthesizing all fish...");
+            GameActions.SetPandorasBoxDesynthAll(true);
+            desynthesisStartedAt = now;
+            return;
+        }
+
+        if (now - desynthesisStartedAt.Value < DesynthesisDuration)
+            return;
+
+        GameActions.SetPandorasBoxDesynthAll(false);
+        GameActions.CloseDesynthesizeWindow();
+        desynthesisStartedAt = null;
         SetState(State.Waiting);
     }
 
