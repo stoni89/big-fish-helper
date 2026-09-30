@@ -1700,6 +1700,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 }
 
                 StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
+
+                // Direkt nach dem Schließen des vorherigen Ergebnis-Fensters gilt der Charakter kurz
+                // noch als "Occupied" (Nutzer-Report: "Unable to execute command while occupied" im
+                // Chat, dadurch wurden nicht alle Fische desynthetisiert - SalvageItem schlug für den
+                // nächsten Fisch fehl, während der Charakter noch aus der vorherigen UI-Übergangs-
+                // Animation heraus kam) - erst abwarten, bis das wieder weg ist.
+                if (Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30])
+                    return;
+
                 if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))
                 {
                     // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
