@@ -75,9 +75,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private const int DesynthesisMinFreeMinutes = 10;
     // Siehe UpdateDesynthesizing/DesynthesisStep - wie lange maximal auf das Erscheinen von
     // SalvageDialog (nach SalvageItem) bzw. SalvageResult (nach Desynthesize) gewartet wird, bevor der
-    // Stack übersprungen bzw. einfach weitergemacht wird.
-    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
+    // Stack übersprungen bzw. einfach weitergemacht wird. Nutzer-Report: die Fisch-Menge sinkt auch
+    // nach einem gemeldeten Timeout noch weiter (z.B. 11 -> 10 zwischen zwei "nicht erschienen"-
+    // Meldungen) - die eigentliche Desynthese scheint im Hintergrund deutlich länger als 5s zu
+    // brauchen (vermutlich Server-Antwortzeit), bevor irgendetwas sichtbar wird. Deutlich großzügiger
+    // bemessen, damit die Automation nicht vorzeitig aufgibt, während die Aktion noch läuft.
+    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(20);
     // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
     // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
     private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
