@@ -849,6 +849,7 @@ public class MainWindow : Window
             config.Save();
         }
 
+        ModernUi.CardDivider();
         var desynthesisIgnoreBigFish = config.DesynthesisIgnoreBigFish;
         if (ModernUi.ToggleRow(Loc.T("Big Fish ignorieren", "Ignore Big Fish"), ref desynthesisIgnoreBigFish,
                 Loc.T(
