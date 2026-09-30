@@ -970,39 +970,43 @@ public class MainWindow : Window
         // Desynthesis-Simulation (Nutzeranforderung) - startet EXAKT denselben Ablauf wie
         // "Desynthesis nach dem Angeln" (FishingAutomation.StartDesynthesisSimulation ->
         // State.Desynthesizing/UpdateDesynthesizing), ohne auf die Einstellung UND einen echten Fang
-        // warten zu müssen.
-        ModernUi.GroupLabel(Loc.T("Desynthesis-Simulation", "Desynthesis simulation"));
-        ModernUi.BeginCard();
-        var automation = plugin.Automation;
-        var simulationRunning = automation.IsRunning;
-        if (simulationRunning)
-            ImGui.BeginDisabled();
-        if (ImGui.Button(Loc.T("Desynthesis simulieren", "Simulate desynthesis") + "##StartDesynthesisSimulation"))
-            automation.StartDesynthesisSimulation();
-        if (simulationRunning)
+        // warten zu müssen. Nur in der Dev-Version sichtbar (Nutzeranforderung) - normale Spieler
+        // brauchen dieses Debug-Werkzeug nicht.
+        if (Plugin.PluginInterface.IsDev)
         {
-            ImGui.EndDisabled();
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ModernUi.GroupLabel(Loc.T("Desynthesis-Simulation", "Desynthesis simulation"));
+            ModernUi.BeginCard();
+            var automation = plugin.Automation;
+            var simulationRunning = automation.IsRunning;
+            if (simulationRunning)
+                ImGui.BeginDisabled();
+            if (ImGui.Button(Loc.T("Desynthesis simulieren", "Simulate desynthesis") + "##StartDesynthesisSimulation"))
+                automation.StartDesynthesisSimulation();
+            if (simulationRunning)
             {
-                ImGui.SetTooltip(Loc.T(
-                    "Läuft bereits eine Automation (oder eine andere Simulation) - erst stoppen.",
-                    "An automation (or another simulation) is already running - stop it first."));
+                ImGui.EndDisabled();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                {
+                    ImGui.SetTooltip(Loc.T(
+                        "Läuft bereits eine Automation (oder eine andere Simulation) - erst stoppen.",
+                        "An automation (or another simulation) is already running - stop it first."));
+                }
             }
+
+            if (!string.IsNullOrEmpty(automation.StatusText))
+                ImGui.TextColored(automation.IsRunning ? ModernUi.Accent : ModernUi.TextMuted, automation.StatusText);
+
+            if (automation.IsRunning && ImGui.Button(Loc.T("Stopp", "Stop") + "##StopDesynthesisSimulation"))
+                automation.Stop();
+
+            ModernUi.CardDivider();
+            if (ImGui.Button(Loc.T("Fisch-Liste ins Log schreiben", "Log fish list") + "##DumpDesynthesizableFish"))
+                GameActions.DumpDesynthesizableFishInInventory();
+            ImGui.TextColored(ModernUi.TextMuted, Loc.T(
+                "Listet im Log, welche Fische aktuell im Hauptinventar für Desynthesis erkannt werden.",
+                "Logs which fish in the main inventory are currently recognized for desynthesis."));
+            ModernUi.EndCard();
         }
-
-        if (!string.IsNullOrEmpty(automation.StatusText))
-            ImGui.TextColored(automation.IsRunning ? ModernUi.Accent : ModernUi.TextMuted, automation.StatusText);
-
-        if (automation.IsRunning && ImGui.Button(Loc.T("Stopp", "Stop") + "##StopDesynthesisSimulation"))
-            automation.Stop();
-
-        ModernUi.CardDivider();
-        if (ImGui.Button(Loc.T("Fisch-Liste ins Log schreiben", "Log fish list") + "##DumpDesynthesizableFish"))
-            GameActions.DumpDesynthesizableFishInInventory();
-        ImGui.TextColored(ModernUi.TextMuted, Loc.T(
-            "Listet im Log, welche Fische aktuell im Hauptinventar für Desynthesis erkannt werden.",
-            "Logs which fish in the main inventory are currently recognized for desynthesis."));
-        ModernUi.EndCard();
     }
 
     /// <summary>
