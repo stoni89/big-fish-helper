@@ -1705,8 +1705,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 // noch als "Occupied" (Nutzer-Report: "Unable to execute command while occupied" im
                 // Chat, dadurch wurden nicht alle Fische desynthetisiert - SalvageItem schlug für den
                 // nächsten Fisch fehl, während der Charakter noch aus der vorherigen UI-Übergangs-
-                // Animation heraus kam) - erst abwarten, bis das wieder weg ist.
-                if (Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30])
+                // Animation heraus kam) - erst abwarten, bis das wieder weg ist. Alle gängigen
+                // "in einem Menü/Fenster"-Varianten geprüft (Occupied30/33/38/39), nicht nur die
+                // einfache Occupied - welche davon genau beim Desynthesis-Fenster gesetzt ist, war
+                // ohne Live-Test nicht sicher zu bestimmen.
+                if (Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30]
+                    || Plugin.Condition[ConditionFlag.Occupied33] || Plugin.Condition[ConditionFlag.Occupied38]
+                    || Plugin.Condition[ConditionFlag.Occupied39])
                     return;
 
                 if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))

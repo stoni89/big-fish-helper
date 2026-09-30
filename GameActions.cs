@@ -411,16 +411,24 @@ public static class GameActions
     /// Aktiviert im "SalvageDialog"-Fenster die Checkbox "Desynthesize entire stack" (Nutzer-
     /// Report/Screenshot: ohne sie angehakt zu haben blieb das Fenster nach dem Öffnen untätig
     /// stehen, statt den GANZEN Stack zu desynthetisieren) - über ECommons' AddonMaster-Wrapper,
-    /// genau wie ein Nutzer-Klick auf die Checkbox.
+    /// genau wie ein Nutzer-Klick auf die Checkbox. Bei einem Item mit Menge 1 (z.B. seltene Fische,
+    /// die nur einzeln im Inventar liegen, Nutzeranforderung: "auch Fische... die nur einzeln im
+    /// Inventar sind") zeigt das Fenster GAR KEINE Checkbox (BulkDesynthCheckboxNode == null, es gibt
+    /// ja nichts zu stapeln) - der ECommons-Zugriff darauf würde dort immer fehlschlagen und den
+    /// Versuch bis zum Timeout blockieren, ohne je zu desynthetisieren. Direkt über den rohen
+    /// FFXIVClientStructs-Knoten geprüft, BEVOR der ECommons-Wrapper überhaupt angefasst wird.
     /// </summary>
     public static unsafe bool TryEnableBulkDesynthesize()
     {
-        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
+        var addon = (AddonSalvageDialog*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
         // IsReady zusätzlich zu IsVisible (Nutzer-Report: NullReferenceException in ECommons, weil der
         // Knoten-Baum direkt nach dem Erscheinen noch nicht vollständig aufgebaut war) - sicherheitshalber
         // trotzdem in try/catch, da ECommons selbst keine Null-Prüfung für seine Knoten-Zugriffe macht.
-        if (addon == null || !addon->IsVisible || !addon->IsReady)
+        if (addon == null || !addon->AtkUnitBase.IsVisible || !addon->AtkUnitBase.IsReady)
             return false;
+
+        if (addon->BulkDesynthCheckboxNode == null)
+            return true;
 
         try
         {
