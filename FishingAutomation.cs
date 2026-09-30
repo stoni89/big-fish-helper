@@ -39,13 +39,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     }
 
     // Siehe UpdateDesynthesizing - Teilschritte EINES Fisch-Stacks: erst per AgentSalvage.SalvageItem
-    // im SalvageDialog auswählen, dann den Desynthesize-Knopf bestätigen (Nutzer-Report: ohne diesen
-    // zweiten Schritt wurde nur ausgewählt, nie tatsächlich desynthetisiert), dann das Ergebnis-
-    // Fenster wieder schließen.
+    // im SalvageDialog auswählen, dann die "Desynthesize entire stack"-Checkbox anhaken (Nutzer-
+    // Report/Screenshot: ohne sie blieb das Fenster nach dem Öffnen einfach untätig stehen, statt
+    // den ganzen Stack zu desynthetisieren), dann den Desynthesize-Knopf bestätigen, dann das
+    // Ergebnis-Fenster wieder schließen.
     private enum DesynthesisStep
     {
         SelectingItem,
         WaitingForDialog,
+        EnablingBulkMode,
         WaitingForResult,
     }
 
@@ -76,6 +78,9 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Stack übersprungen bzw. einfach weitergemacht wird.
     private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
+    // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
+    // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
+    private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -1705,10 +1710,10 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 break;
 
             case DesynthesisStep.WaitingForDialog:
-                if (GameActions.TryConfirmDesynthesize())
+                if (GameActions.TryEnableBulkDesynthesize())
                 {
                     desynthesisStepStartedAt = now;
-                    desynthesisStep = DesynthesisStep.WaitingForResult;
+                    desynthesisStep = DesynthesisStep.EnablingBulkMode;
                 }
                 else if (now - desynthesisStepStartedAt!.Value > DesynthesisDialogTimeout)
                 {
@@ -1716,6 +1721,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                     desynthesisQueue.RemoveAt(0);
                     desynthesisStep = DesynthesisStep.SelectingItem;
                 }
+                break;
+
+            case DesynthesisStep.EnablingBulkMode:
+                if (now - desynthesisStepStartedAt!.Value < DesynthesisBulkModeSettleDelay)
+                    return;
+
+                GameActions.TryConfirmDesynthesize();
+                desynthesisStepStartedAt = now;
+                desynthesisStep = DesynthesisStep.WaitingForResult;
                 break;
 
             case DesynthesisStep.WaitingForResult:

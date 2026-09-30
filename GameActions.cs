@@ -408,6 +408,25 @@ public static class GameActions
     }
 
     /// <summary>
+    /// Aktiviert im "SalvageDialog"-Fenster die Checkbox "Desynthesize entire stack" (Nutzer-
+    /// Report/Screenshot: ohne sie angehakt zu haben blieb das Fenster nach dem Öffnen untätig
+    /// stehen, statt den GANZEN Stack zu desynthetisieren) - über ECommons' AddonMaster-Wrapper,
+    /// genau wie ein Nutzer-Klick auf die Checkbox.
+    /// </summary>
+    public static unsafe bool TryEnableBulkDesynthesize()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
+        if (addon == null || !addon->IsVisible)
+            return false;
+
+        var dialog = new AddonMaster.SalvageDialog((nint)addon);
+        if (!dialog.BulkDesynthEnabled)
+            dialog.BulkDesynthEnabled = true;
+
+        return true;
+    }
+
+    /// <summary>
     /// Bestätigt die von AgentSalvage.SalvageItem geöffnete Auswahl im "SalvageDialog"-Fenster
     /// (Nutzer-Report: der Fisch wurde nur ausgewählt, aber nie tatsächlich desynthetisiert - das
     /// SalvageItem-Fenster wählt das Item nur an, der eigentliche "Desynthesize"-Knopf muss noch
