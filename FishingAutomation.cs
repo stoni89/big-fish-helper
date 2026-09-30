@@ -1715,21 +1715,17 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
                 // Direkt nach dem Schließen des vorherigen Ergebnis-Fensters gilt der Charakter kurz
                 // noch als "Occupied" (Nutzer-Report: "Unable to execute command while occupied" im
-                // Chat) - erst abwarten, bis KEIN natives Desynthesis-Fenster mehr offen ist. Die
-                // vorherige Fassung hat dafür mehrere geratene Condition-Flags (Occupied/30/33/38/39)
-                // geprüft - die blieb aber hängen (Nutzer-Report: "macht keinen weiteren Fisch"),
-                // vermutlich weil eine davon während des gesamten Desynthesis-Vorgangs dauerhaft
-                // gesetzt ist, nicht nur in der kurzen Übergangsphase. Stattdessen jetzt der direkt
-                // relevante, konkrete Zustand: GameActions.IsAnySalvageWindowVisible - mit eigenem
-                // Timeout als Sicherheitsnetz, falls doch mal ein Fenster hängen bleibt (sonst würde
-                // die Automation hier für immer warten, ohne jemals weiterzumachen).
-                if (GameActions.IsAnySalvageWindowVisible())
+                // Chat, trat nach 2 Fischen wieder auf) - erst abwarten, bis KEIN natives Desynthesis-
+                // Fenster mehr offen ist UND keine der gängigen "occupied"-Condition-Flags mehr
+                // gesetzt ist. Beides zusammen mit demselben Timeout als Sicherheitsnetz, falls doch
+                // mal etwas hängen bleibt (sonst würde die Automation hier für immer warten).
+                if (GameActions.IsAnySalvageWindowVisible() || IsOccupiedForDesynthesis())
                 {
                     desynthesisStepStartedAt ??= now;
                     if (now - desynthesisStepStartedAt.Value < DesynthesisResultTimeout)
                         return;
 
-                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: natives Fenster blieb länger als erwartet offen - erzwinge Schließen.");
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: natives Fenster/Occupied blieb länger als erwartet offen - erzwinge Schließen.");
                     GameActions.CloseDesynthesizeWindow();
                 }
 
@@ -1806,6 +1802,17 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         && item.Name.ToString() is { } name
         && name.StartsWith("Timeworn", StringComparison.OrdinalIgnoreCase)
         && name.EndsWith("Map", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Alle gängigen "in einem Menü/Fenster"-Condition-Flags (Nutzer-Report: "Unable to execute
+    /// command while occupied" tritt zwischen zwei Desynthesis-Versuchen auf) - zusätzlich zu
+    /// GameActions.IsAnySalvageWindowVisible in UpdateDesynthesizing geprüft, da der Charakter auch
+    /// noch kurz NACH dem Verschwinden des sichtbaren Fensters als "Occupied" gelten kann.
+    /// </summary>
+    private bool IsOccupiedForDesynthesis() =>
+        Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30]
+        || Plugin.Condition[ConditionFlag.Occupied33] || Plugin.Condition[ConditionFlag.Occupied38]
+        || Plugin.Condition[ConditionFlag.Occupied39];
 
     // ---- Hilfen ----
 
