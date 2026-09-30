@@ -38,6 +38,19 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         Desynthesizing,
     }
 
+    // Siehe UpdateDesynthesizing - Teilschritte EINES Fisch-Stacks: erst per AgentSalvage.SalvageItem
+    // im SalvageDialog auswählen, dann die "Desynthesize entire stack"-Checkbox anhaken (Nutzer-
+    // Report/Screenshot: ohne sie blieb das Fenster nach dem Öffnen einfach untätig stehen, statt
+    // den ganzen Stack zu desynthetisieren), dann den Desynthesize-Knopf bestätigen, dann das
+    // Ergebnis-Fenster wieder schließen.
+    private enum DesynthesisStep
+    {
+        SelectingItem,
+        WaitingForDialog,
+        EnablingBulkMode,
+        WaitingForResult,
+    }
+
     private static readonly TimeSpan TeleportRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ZoneTimeout = TimeSpan.FromSeconds(60);
     // vnavmesh kann das Mesh einer neuen Zone laut Nutzer-Report bis zu 3-5 Minuten lang generieren -
@@ -53,7 +66,6 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan JobSwitchTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FaceSettleDelay = TimeSpan.FromSeconds(1.5);
-    private static readonly TimeSpan RestartInterval = TimeSpan.FromSeconds(10);
     // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
     // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
     private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
@@ -61,11 +73,24 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
     // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
     private const int DesynthesisMinFreeMinutes = 10;
-    // Wartezeit zwischen zwei AgentSalvage.SalvageItem-Aufrufen (siehe GameActions.
-    // TryDesynthesizeStack) - die eigentliche Desynthese braucht eine kurze Animation, ein zu früher
-    // nächster Aufruf würde ins Leere laufen. Bewusst großzügig geschätzt, nicht live verifiziert -
-    // Kalibrierung nach erstem Test.
-    private static readonly TimeSpan DesynthesisStepInterval = TimeSpan.FromSeconds(4);
+    // Siehe UpdateDesynthesizing/DesynthesisStep - wie lange maximal auf das Erscheinen von
+    // SalvageDialog (nach SalvageItem) bzw. SalvageResult (nach Desynthesize) gewartet wird, bevor der
+    // Stack übersprungen bzw. einfach weitergemacht wird. Ein längeres Timeout (20s) hat NICHTS
+    // gebracht (Nutzer-Report) - zurück auf kurz, die eigentliche Ursache liegt woanders (siehe
+    // SelectingItem-Kommentar: die Menge sinkt trotz "nicht erschienen" weiter, das Item wird also
+    // TROTZDEM erfolgreich desynthetisiert, nur ohne dass SalvageDialog je sichtbar wird).
+    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
+    // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
+    // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
+    private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
+    // Fester Mindestabstand zwischen zwei SalvageItem-Aufrufen (Nutzeranforderung: "100% Fix, gerne
+    // auch mit einem Delay") - unabhängig von GameActions.IsAnySalvageWindowVisible/
+    // IsOccupiedForDesynthesis (beide blieben trotz Nachbesserung unzuverlässig, siehe deren
+    // Kommentare): der Charakter braucht nach dem Schließen des Ergebnis-Fensters offenbar länger,
+    // bis ein neuer Aufruf sicher nicht mehr als "Occupied" abgelehnt wird, als beide Prüfungen
+    // zusammen erkennen konnten.
+    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(2);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -207,7 +232,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird. Enthält die noch
     // abzuarbeitenden Fisch-Item-IDs (ein Eintrag je gefundenem Stack im Hauptinventar).
     private List<uint>? desynthesisQueue;
+    private DesynthesisStep desynthesisStep;
     private DateTime? desynthesisStepStartedAt;
+    // Siehe DesynthesisInterItemDelay - ab wann der NÄCHSTE SalvageItem-Aufruf frühestens erlaubt
+    // ist, unabhängig davon, ob Fenster/Occupied-Prüfungen schon "grün" melden.
+    private DateTime desynthesisNextAttemptEarliestAt = DateTime.MinValue;
+    private uint desynthesisQuantityBeforeAttempt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -387,6 +417,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
         desynthesisQueue = null;
         desynthesisStepStartedAt = null;
+        desynthesisNextAttemptEarliestAt = DateTime.MinValue;
 
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
@@ -511,6 +542,26 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // ---- Warten auf den nächsten Fisch ----
 
     /// <summary>Ob für diesen Fisch eine Angel-Position eingetragen ist (sonst kann die Automation ihn nicht anfliegen).</summary>
+    /// <summary>
+    /// Debug: startet EXAKT denselben Ablauf wie "Desynthesis nach dem Angeln" (State.Desynthesizing,
+    /// siehe UpdateDesynthesizing) - ohne echten Fischgang, zum Testen ohne auf die Einstellung UND
+    /// einen echten Fang warten zu müssen (Nutzeranforderung: Debug -> Desynthesis-Simulation). Nur
+    /// nutzbar, solange nicht schon eine normale Automation läuft.
+    /// </summary>
+    public bool StartDesynthesisSimulation()
+    {
+        if (IsRunning)
+            return false;
+
+        IsRunning = true;
+        target = null;
+        targetPosition = null;
+        SetState(State.Desynthesizing);
+        StatusText = Loc.T("Debug: Desynthesis-Simulation gestartet...", "Debug: desynthesis simulation started...");
+        Plugin.Log.Info("[FishingAutomation] Debug: Desynthesis-Simulation gestartet.");
+        return true;
+    }
+
     public bool CanReach(BigFish fish) => FishingPositionStore.GetAll(fish.ItemId).Count > 0;
 
     /// <summary>
@@ -1525,21 +1576,16 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         lastActionAt = now; // nach SetState - sonst würde sofort erneut ausgelöst
     }
 
+    // Nutzeranforderung: "/ahstart nur zu Beginn senden... danach nicht mehr, das macht AutoHook
+    // alles von alleine" - kein periodischer Neustart-Versuch mehr hier (der frühere "Angel ruht zu
+    // lange"-Fallback kollidierte mit AutoHooks eigenen Wurfversuchen, siehe
+    // "[AutoHook] You can't cast right now"-Spam im Chat).
     private void UpdateFishing(DateTime now)
     {
         var remaining = now < targetWindow.StartUtc
             ? Loc.T($"Fenster in {FormatSpan(targetWindow.StartUtc - now)}", $"window in {FormatSpan(targetWindow.StartUtc - now)}")
             : Loc.T($"noch {FormatSpan(targetWindow.EndUtc - now)}", $"{FormatSpan(targetWindow.EndUtc - now)} left");
         StatusText = Loc.T($"Angle auf {FishName(target!)} ({remaining})", $"Fishing for {FishName(target!)} ({remaining})");
-
-        // AutoHook wirft normalerweise selbst neu aus - ruht die Angel doch einmal länger, die
-        // Start-Aktionen erneut auslösen.
-        if (!Plugin.Condition[ConditionFlag.Fishing] && now - lastActionAt > RestartInterval)
-        {
-            lastActionAt = now;
-            FaceWater();
-            PressAutoHookStartActions();
-        }
     }
 
     private static void PressAutoHookStartActions()
@@ -1576,6 +1622,16 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         StopPath();
         StopLifestreamMove();
         DisableAutoHook();
+
+        // Einholen direkt hier auslösen (Nutzer-Report: nach dem Fang wurde die Angel nicht
+        // eingeholt, Desynthesis konnte dadurch nie starten) - der generische "Angel-Haltung"-Check
+        // in Tick() (siehe dort) greift zwar auch, aber erst einen Frame SPÄTER und deckt bewusst
+        // NICHT State.Waiting ab (das würde sonst auch beim manuellen Angeln außerhalb der
+        // Automation eingreifen). Direkt nach einem selbst ausgelösten Fang wissen wir dagegen
+        // sicher, dass die Automation gerade fischen ließ - unabhängig vom Folgezustand einholen.
+        GameActions.QuitFishing();
+        lastQuitAt = DateTime.UtcNow;
+
         StatusText = message;
         target = null;
         targetPosition = null;
@@ -1617,37 +1673,199 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     /// native Spielfunktion (AgentSalvage.SalvageItem, siehe GameActions.TryDesynthesizeStack) - kein
     /// Fremd-Plugin wie PandorasBox nötig (Nutzeranforderung: "ich würde ungern Pandora Box als
     /// Required Plugin einbauen... kannst du alle Fische im Inventar auslesen und einzeln desynthesis
-    /// nutzen"). Zwischen zwei Desynthetisierungen eine feste Wartezeit (siehe
-    /// DesynthesisStepInterval), da die eigentliche Desynthese eine kurze Animation braucht - danach
-    /// wird das native Fenster geschlossen (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
+    /// nutzen"). SalvageItem WÄHLT das Item im "SalvageDialog"-Fenster nur an - erst
+    /// GameActions.TryConfirmDesynthesize (der echte "Desynthesize"-Knopf) löst die Desynthese
+    /// tatsächlich aus (Nutzer-Report: ohne diesen zweiten Schritt wurde nur ausgewählt, das Fenster
+    /// nach ein paar Sekunden wieder geschlossen, ohne je wirklich zu desynthetisieren). Über
+    /// DesynthesisStep wird dabei, statt fester Wartezeiten, jeweils auf das tatsächliche
+    /// Erscheinen/Verschwinden der Addons gewartet - danach wird das Ergebnis-Fenster geschlossen
+    /// (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
     /// </summary>
     private void UpdateDesynthesizing(DateTime now)
     {
         if (desynthesisQueue == null)
         {
-            var fishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+            // Standardmäßig ALLE Fische (FishCatchState.AllFishItemIds, ItemUICategory "Fish" mit
+            // Desynth > 0 - Nutzeranforderung: "wirklich alle Desynthesen die auch im nativen
+            // Desynthesis Fenster drin sind") - mit "Big Fish ignorieren" (Nutzeranforderung) werden
+            // die in BigFishData gepflegten Big Fish davon ausgenommen. IsTreasureMapItem bleibt als
+            // zusätzliche Absicherung (Schatzkarten dürfen nie desynthetisiert werden), auch wenn
+            // Desynth > 0 das eigentlich schon ausschließen sollte.
+            var fishItemIds = FishCatchState.AllFishItemIds.Where(id => !IsTreasureMapItem(id)).ToHashSet();
+            if (plugin.Configuration.DesynthesisIgnoreBigFish)
+            {
+                var bigFishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+                fishItemIds = fishItemIds.Where(id => !bigFishItemIds.Contains(id)).ToHashSet();
+            }
+
+            // Sicherheitshalber jedes alte natives Fenster schließen, BEVOR der erste SalvageItem-
+            // Aufruf dieses Laufs passiert - ein von einem vorherigen (z.B. abgebrochenen Test-)Lauf
+            // noch hängendes Fenster/AgentSalvage-Zustand könnte sonst den ersten Aufruf blockieren.
+            GameActions.CloseDesynthesizeWindow();
+
+            // DesynthesisInterItemDelay galt bisher nur ZWISCHEN zwei Fischen, nicht vor dem ALLER-
+            // ERSTEN Aufruf dieses Laufs (Nutzer-Report: bei einem frischen Lauf schlug gleich der
+            // erste Fisch fehl) - jetzt auch hier gesetzt, damit selbst der erste Versuch denselben
+            // Sicherheitsabstand bekommt.
+            desynthesisNextAttemptEarliestAt = DateTime.UtcNow + DesynthesisInterItemDelay;
+
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
+            desynthesisStep = DesynthesisStep.SelectingItem;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
         }
 
-        if (desynthesisStepStartedAt != null && now - desynthesisStepStartedAt.Value < DesynthesisStepInterval)
-            return;
-
-        if (desynthesisQueue.Count == 0)
+        switch (desynthesisStep)
         {
-            GameActions.CloseDesynthesizeWindow();
-            desynthesisQueue = null;
-            desynthesisStepStartedAt = null;
-            SetState(State.Waiting);
-            return;
-        }
+            case DesynthesisStep.SelectingItem:
+                if (desynthesisQueue.Count == 0)
+                {
+                    GameActions.CloseDesynthesizeWindow();
+                    desynthesisQueue = null;
+                    desynthesisStepStartedAt = null;
+                    SetState(State.Waiting);
+                    return;
+                }
 
-        var itemId = desynthesisQueue[0];
-        desynthesisQueue.RemoveAt(0);
-        StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
-        GameActions.TryDesynthesizeStack(itemId);
-        desynthesisStepStartedAt = now;
+                StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
+
+                // Fester Mindestabstand seit dem letzten Fisch (siehe DesynthesisInterItemDelay) -
+                // ZUERST geprüft, vor den Fenster-/Occupied-Checks darunter: die blieben trotz
+                // Nachbesserung unzuverlässig (Nutzer-Report: "Unable to execute command while
+                // occupied" trat weiterhin auf), ein fester Delay ist unabhängig davon garantiert.
+                if (now < desynthesisNextAttemptEarliestAt)
+                    return;
+
+                // Direkt nach dem Schließen des vorherigen Ergebnis-Fensters gilt der Charakter kurz
+                // noch als "Occupied" - zusätzlich abwarten, bis KEIN natives Desynthesis-Fenster mehr
+                // offen ist UND keine der gängigen "occupied"-Condition-Flags mehr gesetzt ist, mit
+                // demselben Timeout als Sicherheitsnetz, falls doch mal etwas hängen bleibt.
+                if (GameActions.IsAnySalvageWindowVisible() || IsOccupiedForDesynthesis())
+                {
+                    desynthesisStepStartedAt ??= now;
+                    if (now - desynthesisStepStartedAt.Value < DesynthesisResultTimeout)
+                        return;
+
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: natives Fenster/Occupied blieb länger als erwartet offen - erzwinge Schließen.");
+                    GameActions.CloseDesynthesizeWindow();
+                }
+
+                desynthesisStepStartedAt = null;
+
+                // VOR dem Aufruf gemerkt (Nutzer-Report: die Menge sinkt oft trotzdem, obwohl
+                // SalvageDialog laut unserer Prüfung nie erschien - das Item wird also TROTZDEM
+                // erfolgreich desynthetisiert, nur unsichtbar für uns) - siehe WaitingForDialog-Timeout,
+                // das damit einen echten Fehlschlag von einem nur unsichtbaren Erfolg unterscheidet.
+                desynthesisQuantityBeforeAttempt = GameActions.GetInventoryItemCount(desynthesisQueue[0]);
+
+                if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))
+                {
+                    // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
+                    desynthesisQueue.RemoveAt(0);
+                    return;
+                }
+
+                desynthesisStepStartedAt = now;
+                desynthesisStep = DesynthesisStep.WaitingForDialog;
+                break;
+
+            case DesynthesisStep.WaitingForDialog:
+                // KEIN erneuter SalvageItem-Aufruf mehr, solange gewartet wird (Nutzeranforderung:
+                // "Unable to execute command while occupied" soll komplett verschwinden) - der
+                // Wiederholungsversuch hier ging von einem "der erste Aufruf verpufft manchmal"-
+                // Verdacht aus, der sich im Nachhinein als der ZU KURZE Abstand zum VORHERIGEN Fisch
+                // herausstellte (siehe DesynthesisInterItemDelay) - ein zweiter SalvageItem-Aufruf,
+                // während der erste noch verarbeitet wird, ist selbst eine Ursache der Meldung. Rein
+                // passiv bis DesynthesisDialogTimeout warten reicht jetzt.
+                if (GameActions.TryEnableBulkDesynthesize())
+                {
+                    desynthesisStepStartedAt = now;
+                    desynthesisStep = DesynthesisStep.EnablingBulkMode;
+                }
+                else if (now - desynthesisStepStartedAt!.Value > DesynthesisDialogTimeout)
+                {
+                    // Nutzer-Report: die Menge sinkt trotz "SalvageDialog nicht erschienen" oft
+                    // trotzdem weiter - SalvageItem scheint manchmal komplett ohne sichtbares Fenster
+                    // durchzulaufen. Deshalb hier NICHT blind als Fehlschlag werten, sondern die
+                    // tatsächliche Menge gegen den vor dem Aufruf gemerkten Wert prüfen (siehe
+                    // SelectingItem/desynthesisQuantityBeforeAttempt) - hat sie sich verringert, war
+                    // es ein (unsichtbarer) Erfolg, einfach mit demselben Fisch weitermachen statt
+                    // ihn als gescheitert zu überspringen.
+                    var currentQuantity = GameActions.GetInventoryItemCount(desynthesisQueue[0]);
+                    if (currentQuantity < desynthesisQuantityBeforeAttempt)
+                    {
+                        Plugin.Log.Info($"[FishingAutomation] Desynthesis: SalvageDialog nie sichtbar geworden, Menge sank aber " +
+                            $"{desynthesisQuantityBeforeAttempt} -> {currentQuantity} - werte als Erfolg, mache weiter.");
+                        if (currentQuantity == 0)
+                            desynthesisQueue.RemoveAt(0);
+                        desynthesisStep = DesynthesisStep.SelectingItem;
+                        break;
+                    }
+
+                    // Diagnose (Nutzeranforderung: weiterhin "SalvageDialog nicht erschienen" trotz
+                    // Delay/Occupied-Guard) - loggt den tatsächlichen Zustand in genau diesem Moment,
+                    // statt weiter zu raten, welches Flag/welche Ursache wirklich zutrifft.
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack. " +
+                        $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, Occupied30={Plugin.Condition[ConditionFlag.Occupied30]}, " +
+                        $"Occupied33={Plugin.Condition[ConditionFlag.Occupied33]}, Occupied38={Plugin.Condition[ConditionFlag.Occupied38]}, " +
+                        $"Occupied39={Plugin.Condition[ConditionFlag.Occupied39]}, Casting={Plugin.Condition[ConditionFlag.Casting]}, " +
+                        $"Fishing={Plugin.Condition[ConditionFlag.Fishing]}, Mounted={Plugin.Condition[ConditionFlag.Mounted]}, " +
+                        $"SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
+                    desynthesisQueue.RemoveAt(0);
+                    desynthesisStep = DesynthesisStep.SelectingItem;
+                }
+                break;
+
+            case DesynthesisStep.EnablingBulkMode:
+                if (now - desynthesisStepStartedAt!.Value < DesynthesisBulkModeSettleDelay)
+                    return;
+
+                GameActions.TryConfirmDesynthesize();
+                desynthesisStepStartedAt = now;
+                desynthesisStep = DesynthesisStep.WaitingForResult;
+                break;
+
+            case DesynthesisStep.WaitingForResult:
+                var closed = GameActions.TryCloseSalvageResult();
+                if (!closed && now - desynthesisStepStartedAt!.Value <= DesynthesisResultTimeout)
+                    return;
+
+                // "Desynthesize entire stack" zeigt trotzdem für JEDE EINZELNE Einheit ein eigenes
+                // Vorher/Nachher-Ergebnisfenster (Nutzer-Report/Screenshot: "BEFORE: 1" trotz
+                // größerem Stack, Automation blieb danach stehen) - bleiben noch welche vom selben
+                // Fisch im Hauptinventar übrig, direkt erneut denselben Fisch auswählen statt zum
+                // nächsten Eintrag der Warteschlange weiterzugehen.
+                if (GameActions.GetInventoryItemCount(desynthesisQueue[0]) == 0)
+                    desynthesisQueue.RemoveAt(0);
+
+                desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
+                desynthesisStep = DesynthesisStep.SelectingItem;
+                break;
+        }
     }
+
+    /// <summary>
+    /// Ob ein Item eine Schatzkarte ist (z.B. "Timeworn Braaxskin Map") - namensbasiert erkannt, da
+    /// Lumina keine eigene, klar abgrenzbare ItemUICategory dafür hat: alle Schatzkarten im Spiel
+    /// heißen durchgängig "Timeworn ... Map" (Englisch). Für UpdateDesynthesizing (Nutzeranforderung:
+    /// "Maps niemals Desynthesis verwenden") - manche Angel-Plätze listen Schatzkarten als "Fang" im
+    /// Fischer-Logbuch (FishParameter), FishCatchState.AllFishItemIds würde sie sonst mit einschließen.
+    /// </summary>
+    private static bool IsTreasureMapItem(uint itemId) =>
+        Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>().TryGetRow(itemId, out var item)
+        && item.Name.ToString() is { } name
+        && name.StartsWith("Timeworn", StringComparison.OrdinalIgnoreCase)
+        && name.EndsWith("Map", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Alle gängigen "in einem Menü/Fenster"-Condition-Flags (Nutzer-Report: "Unable to execute
+    /// command while occupied" tritt zwischen zwei Desynthesis-Versuchen auf) - zusätzlich zu
+    /// GameActions.IsAnySalvageWindowVisible in UpdateDesynthesizing geprüft, da der Charakter auch
+    /// noch kurz NACH dem Verschwinden des sichtbaren Fensters als "Occupied" gelten kann.
+    /// </summary>
+    private bool IsOccupiedForDesynthesis() =>
+        Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30]
+        || Plugin.Condition[ConditionFlag.Occupied33] || Plugin.Condition[ConditionFlag.Occupied38]
+        || Plugin.Condition[ConditionFlag.Occupied39];
 
     // ---- Hilfen ----
 

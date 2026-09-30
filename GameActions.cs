@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -358,12 +359,81 @@ public static class GameActions
             for (var i = 0; i < container->GetSize(); i++)
             {
                 var slot = container->GetInventorySlot(i);
-                if (slot != null && !slot->IsEmpty() && itemIds.Contains(slot->GetItemId()))
-                    result.Add(slot->GetItemId());
+                if (slot == null || slot->IsEmpty())
+                    continue;
+
+                // GetBaseItemId() statt GetItemId() (Nutzer-Report: "Goldgrouper" - ein Collectable-
+                // Fisch - wurde trotz korrekter Kategorie/Desynth-Daten nie gefunden) - GetItemId()
+                // liefert bei besonderen Instanzen (z.B. Collectables) offenbar eine abweichende/
+                // kodierte Id, GetBaseItemId() dagegen die echte Katalog-Id aus dem Item-Sheet, gegen
+                // die itemIds hier verglichen wird.
+                var baseItemId = slot->GetBaseItemId();
+                if (itemIds.Contains(baseItemId))
+                    result.Add(baseItemId);
             }
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Debug: loggt jeden Fisch im Hauptinventar, der laut FishCatchState.AllFishItemIds aktuell für
+    /// "Desynthesis nach dem Angeln" infrage käme (Item-Id, Name, Menge, Tasche/Slot) - zum Prüfen
+    /// ohne echten Testlauf, ob/welche Fische überhaupt gefunden werden (Nutzeranforderung: Debug-
+    /// Knopf für eine Liste im Log).
+    /// </summary>
+    public static unsafe void DumpDesynthesizableFishInInventory()
+    {
+        var fishItemIds = FishCatchState.AllFishItemIds;
+        Plugin.Log.Info($"[GameActions] Desynthesis-Debug: {fishItemIds.Count} bekannte Fisch-Item-Ids insgesamt (FishCatchState.AllFishItemIds).");
+
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+        {
+            Plugin.Log.Warning("[GameActions] Desynthesis-Debug: InventoryManager nicht verfügbar.");
+            return;
+        }
+
+        var itemSheet = Plugin.DataManager.GetExcelSheet<Item>();
+        var found = 0;
+        foreach (var bag in MainInventoryBags)
+        {
+            var container = manager->GetInventoryContainer(bag);
+            if (container == null)
+                continue;
+
+            for (var i = 0; i < container->GetSize(); i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->IsEmpty())
+                    continue;
+
+                // GetBaseItemId() statt GetItemId() - siehe FindInventoryItemIds-Kommentar
+                // (Collectable-Instanzen wie Goldgrouper wurden über GetItemId() nie gefunden, weil
+                // dessen zurückgegebene Id für solche Instanzen von der Katalog-Id abweicht).
+                var itemId = slot->GetBaseItemId();
+
+                // NICHT auf fishItemIds.Contains vorgefiltert (Nutzer-Report: Goldgrouper #43775
+                // bleibt trotz Kategorie "Seafood"/Desynth>0 unerklärlich unentdeckt) - stattdessen
+                // JEDES Item mit ItemUICategory "Seafood"/"Fish" geloggt, inkl. ob es tatsächlich in
+                // AllFishItemIds enthalten ist, um den Widerspruch direkt sichtbar zu machen.
+                if (!itemSheet.TryGetRow(itemId, out var item))
+                    continue;
+
+                var categoryName = item.ItemUICategory.ValueNullable?.Name.ToString() ?? "?";
+                var isFishCategory = categoryName is "Fish" or "Seafood";
+                var isKnownFish = fishItemIds.Contains(itemId);
+                if (!isFishCategory && !isKnownFish)
+                    continue;
+
+                found++;
+                Plugin.Log.Info($"[GameActions] Desynthesis-Debug:   #{itemId} '{item.Name}' x{slot->GetQuantity()} ({bag}, Slot {i}) - " +
+                                 $"Kategorie='{categoryName}', Desynth={item.Desynth}, InAllFishItemIds={isKnownFish}.");
+            }
+        }
+
+        if (found == 0)
+            Plugin.Log.Info("[GameActions] Desynthesis-Debug: kein passender Fisch im Hauptinventar gefunden.");
     }
 
     /// <summary>
@@ -390,12 +460,26 @@ public static class GameActions
             for (var i = 0; i < container->GetSize(); i++)
             {
                 var slot = container->GetInventorySlot(i);
-                if (slot == null || slot->IsEmpty() || slot->GetItemId() != itemId)
+                // GetBaseItemId() statt GetItemId() - siehe FindInventoryItemIds-Kommentar
+                // (Collectable-Instanzen wurden über GetItemId() nie gefunden).
+                if (slot == null || slot->IsEmpty() || slot->GetBaseItemId() != itemId)
                     continue;
 
                 var agent = AgentSalvage.Instance();
                 if (agent == null)
                     return false;
+
+                // Diagnose für den Fall, dass SalvageItem trotz identischer Item-Daten (per Lumina
+                // geprüft: Desynth/Collectable/Untradable usw. sind für "funktionierende" und
+                // "hängende" Fische exakt gleich) kein Fenster öffnet (Nutzer-Report) - IsSalvage-
+                // ResultAddonOpen bleibt evtl. von einem vorherigen, abgebrochenen Versuch dieser
+                // Testsitzung auf true hängen und blockiert dadurch einen neuen Aufruf. Best-effort
+                // vorab zurückgesetzt, falls das zutrifft.
+                if (agent->IsSalvageResultAddonOpen)
+                {
+                    Plugin.Log.Warning("[GameActions] AgentSalvage.IsSalvageResultAddonOpen war noch true vor einem neuen SalvageItem-Aufruf - zurückgesetzt.");
+                    agent->IsSalvageResultAddonOpen = false;
+                }
 
                 agent->SalvageItem(slot, (int)slot->GetQuantity(), 0);
                 Plugin.Log.Info($"[GameActions] Desynthetisiere Item #{itemId} (Menge {slot->GetQuantity()}).");
@@ -406,9 +490,100 @@ public static class GameActions
         return false;
     }
 
+    /// <summary>
+    /// Aktiviert im "SalvageDialog"-Fenster die Checkbox "Desynthesize entire stack" (Nutzer-
+    /// Report/Screenshot: ohne sie angehakt zu haben blieb das Fenster nach dem Öffnen untätig
+    /// stehen, statt den GANZEN Stack zu desynthetisieren) - über ECommons' AddonMaster-Wrapper,
+    /// genau wie ein Nutzer-Klick auf die Checkbox. Bei einem Item mit Menge 1 (z.B. seltene Fische,
+    /// die nur einzeln im Inventar liegen, Nutzeranforderung: "auch Fische... die nur einzeln im
+    /// Inventar sind") zeigt das Fenster GAR KEINE Checkbox (BulkDesynthCheckboxNode == null, es gibt
+    /// ja nichts zu stapeln) - der ECommons-Zugriff darauf würde dort immer fehlschlagen und den
+    /// Versuch bis zum Timeout blockieren, ohne je zu desynthetisieren. Direkt über den rohen
+    /// FFXIVClientStructs-Knoten geprüft, BEVOR der ECommons-Wrapper überhaupt angefasst wird.
+    /// </summary>
+    public static unsafe bool TryEnableBulkDesynthesize()
+    {
+        var addon = (AddonSalvageDialog*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
+        // IsReady zusätzlich zu IsVisible (Nutzer-Report: NullReferenceException in ECommons, weil der
+        // Knoten-Baum direkt nach dem Erscheinen noch nicht vollständig aufgebaut war) - sicherheitshalber
+        // trotzdem in try/catch, da ECommons selbst keine Null-Prüfung für seine Knoten-Zugriffe macht.
+        if (addon == null || !addon->AtkUnitBase.IsVisible || !addon->AtkUnitBase.IsReady)
+            return false;
+
+        if (addon->BulkDesynthCheckboxNode == null)
+            return true;
+
+        try
+        {
+            var dialog = new AddonMaster.SalvageDialog((nint)addon);
+            if (!dialog.BulkDesynthEnabled)
+                dialog.BulkDesynthEnabled = true;
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryEnableBulkDesynthesize fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Bestätigt die von AgentSalvage.SalvageItem geöffnete Auswahl im "SalvageDialog"-Fenster
+    /// (Nutzer-Report: der Fisch wurde nur ausgewählt, aber nie tatsächlich desynthetisiert - das
+    /// SalvageItem-Fenster wählt das Item nur an, der eigentliche "Desynthesize"-Knopf muss noch
+    /// gedrückt werden). Über ECommons' AddonMaster-Wrapper (klickt den echten Knopf-Callback,
+    /// genau wie ein Nutzer-Klick), statt selbst mit AtkComponentButton/FireCallback zu hantieren.
+    /// </summary>
+    public static unsafe bool TryConfirmDesynthesize()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
+            return false;
+
+        try
+        {
+            new AddonMaster.SalvageDialog((nint)addon).Desynthesize();
+            Plugin.Log.Info("[GameActions] Desynthesis bestätigt (SalvageDialog.Desynthesize).");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryConfirmDesynthesize fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Schließt das Ergebnis-Fenster ("SalvageResult"), das nach einer bestätigten Desynthesis
+    /// erscheint. IsReady zusätzlich zu IsVisible, dazu try/catch um den eigentlichen ECommons-Aufruf
+    /// (Nutzer-Report: NullReferenceException in AddonMaster.SalvageResult.Close(), weil der Knoten-
+    /// Baum direkt nach dem Erscheinen noch nicht vollständig aufgebaut war - ein einzelner
+    /// fehlgeschlagener Frame darf die ganze Automation nicht abbrechen, siehe DesynthesisResultTimeout
+    /// als Rückfallebene im Aufrufer).
+    /// </summary>
+    public static unsafe bool TryCloseSalvageResult()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageResult").Address;
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
+            return false;
+
+        try
+        {
+            new AddonMaster.SalvageResult((nint)addon).Close();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryCloseSalvageResult fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
+    }
+
     // Native Desynthesis-Fenster (per FFXIVClientStructs-Struct-Namen verifiziert: AddonSalvageDialog/
-    // AddonSalvageResult/AddonSalvageAutoDialog/AddonSalvageItemSelector) - nicht live geprüft, ob
-    // wirklich alle vier bei "Desynthesis nach dem Angeln" auftauchen können.
+    // AddonSalvageResult/AddonSalvageAutoDialog/AddonSalvageItemSelector) - Sicherheitsnetz zum
+    // Schließen aller vier am Ende, falls eins davon trotz TryConfirmDesynthesize/TryCloseSalvageResult
+    // noch offen hängt (z.B. nach einem Timeout).
     private static readonly string[] SalvageAddonNames = { "SalvageDialog", "SalvageResult", "SalvageAutoDialog", "SalvageItemSelector" };
 
     /// <summary>
@@ -425,5 +600,44 @@ public static class GameActions
             if (addon != null && addon->IsVisible)
                 addon->IsVisible = false;
         }
+    }
+
+    /// <summary>
+    /// Ob irgendeines der vier nativen Desynthesis-Fenster noch sichtbar ist - für
+    /// FishingAutomation.UpdateDesynthesizing: direkt VOR dem nächsten SalvageItem-Aufruf abwarten,
+    /// bis das vorherige Ergebnis-Fenster wirklich weg ist (Nutzer-Report: geratene Condition-Flags
+    /// wie Occupied/Occupied30/33/38/39 waren dafür kein zuverlässiges Signal - die Simulation blieb
+    /// nach dem ersten Fisch stehen, obwohl noch welche im Inventar waren). Diese Prüfung fragt
+    /// direkt das tatsächlich relevante Fenster ab, statt eine Condition-Flag zu erraten.
+    /// </summary>
+    public static unsafe bool IsAnySalvageWindowVisible()
+    {
+        foreach (var name in SalvageAddonNames)
+        {
+            var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName(name).Address;
+            if (addon != null && addon->IsVisible)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Namen ALLER gerade sichtbaren nativen Desynthesis-Fenster (durch Komma getrennt, "keins" wenn
+    /// leer) - Diagnose für FishingAutomation.UpdateDesynthesizing: IsAnySalvageWindowVisible allein
+    /// sagt nicht, WELCHES der vier Fenster es ist (Nutzer-Report: war bei einem Timeout schon einmal
+    /// true, obwohl "SalvageDialog" selbst nicht erschien - vermutlich stattdessen "SalvageItemSelector").
+    /// </summary>
+    public static unsafe string GetVisibleSalvageWindowNames()
+    {
+        var visible = new List<string>();
+        foreach (var name in SalvageAddonNames)
+        {
+            var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName(name).Address;
+            if (addon != null && addon->IsVisible)
+                visible.Add(name);
+        }
+
+        return visible.Count > 0 ? string.Join(", ", visible) : "keins";
     }
 }

@@ -226,18 +226,17 @@ public static class ModernUi
 
     /// <summary>
     /// Dünne horizontale Trennlinie ZWISCHEN mehreren Einstellungen innerhalb derselben Karte (z.B.
-    /// Mount-Auswahl und Sprint-Umschalter im "Anflug"-Block, Nutzeranforderung: "identisch wie beim
-    /// Explorer's Codex Plugin") - NICHT zu verwechseln mit der Linie in SectionHeader (die trennt
-    /// Titel/Hilfstext von den Karten darunter, nicht einzelne Zeilen INNERHALB einer Karte).
+    /// Mount-Auswahl und Sprint-Umschalter im "Anflug"-Block) - NICHT zu verwechseln mit der Linie in
+    /// SectionHeader (die trennt Titel/Hilfstext von den Karten darunter, nicht einzelne Zeilen
+    /// INNERHALB einer Karte). Spacing()+Separator()+Spacing() statt eines eigenen, breiter
+    /// bemessenen Dummy(8)+Linie+Dummy(8) (Nutzeranforderung: Zeilenhöhe in den Einstellungen
+    /// identisch zum Explorer's Codex Plugin, dessen Overlay-Karte genau dieses engere Muster nutzt).
     /// </summary>
     public static void CardDivider()
     {
-        ImGui.Dummy(new Vector2(0f, 8f));
-        var drawList = ImGui.GetWindowDrawList();
-        var min = ImGui.GetCursorScreenPos();
-        var width = ImGui.GetContentRegionAvail().X;
-        drawList.AddLine(min, min + new Vector2(width, 0f), ImGui.ColorConvertFloat4ToU32(CardBorder), 1f);
-        ImGui.Dummy(new Vector2(0f, 8f));
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
     }
 
     /// <summary>
@@ -306,10 +305,15 @@ public static class ModernUi
         var rowScreenMin = ImGui.GetCursorScreenPos();
         var totalAvail = ImGui.GetContentRegionAvail().X - CardMargin;
 
-        ImGui.SetCursorPos(rowStart + new Vector2(0f, (rowHeight - textHeight) * 0.5f));
-        ImGui.TextUnformatted(label);
-        var labelMax = ImGui.GetItemRectMax();
-        var labelMinY = ImGui.GetItemRectMin().Y;
+        // Per Draw-List statt SetCursorPos()+TextUnformitted() (Nutzer-Report/Screenshot: Beschriftung
+        // sitzt bei der JEWEILS ERSTEN Zeile pro Karte über der Mitte, bei allen weiteren Zeilen aber
+        // korrekt zentriert) - siehe ToggleRow-Kommentar: TextUnformitted addiert beim Zeichnen
+        // intern noch einen "Zeilen-Basislinien-Offset", der von der GroupLabel-Überschrift direkt
+        // davor nachhängen kann. AddText umgeht das komplett.
+        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f);
+        ImGui.GetWindowDrawList().AddText(labelPos, ImGui.GetColorU32(ImGuiCol.Text), label);
+        var labelMax = labelPos + ImGui.CalcTextSize(label);
+        var labelMinY = labelPos.Y;
 
         var widgetX = totalAvail > controlWidth ? rowStart.X + totalAvail - controlWidth : rowStart.X;
         ImGui.SetCursorPos(new Vector2(widgetX, rowStart.Y));
@@ -377,10 +381,18 @@ public static class ModernUi
         // Kartenrand, unabhängig davon, wie breit das Label ist.
         var totalAvail = ImGui.GetContentRegionAvail().X - CardMargin;
 
-        ImGui.SetCursorPos(rowStart + new Vector2(0f, (rowHeight - textHeight) * 0.5f));
-        ImGui.TextUnformatted(label);
-        var labelMax = ImGui.GetItemRectMax();
-        var labelMinY = ImGui.GetItemRectMin().Y;
+        // Per Draw-List statt SetCursorPos()+TextUnformitted() (Nutzer-Report/Screenshot: Beschriftung
+        // sitzt bei der JEWEILS ERSTEN Zeile pro Karte über der Mitte, bei allen weiteren Zeilen aber
+        // korrekt zentriert) - TextUnformitted addiert beim Zeichnen intern noch einen "Zeilen-
+        // Basislinien-Offset" (window->DC.CurrLineTextBaseOffset), der von der GroupLabel-Überschrift
+        // direkt davor (größere Schriftskalierung) nachhängen kann, weil unser manuelles SetCursorPos
+        // ImGuis normale Zeilenverfolgung umgeht. AddText zeichnet direkt an der übergebenen
+        // Bildschirmposition, ganz ohne diesen zusätzlichen Offset - exakt dieselbe Technik wie schon
+        // beim "?"-Hilfe-Icon in HelpIconIfHovered.
+        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f);
+        ImGui.GetWindowDrawList().AddText(labelPos, ImGui.GetColorU32(ImGuiCol.Text), label);
+        var labelMax = labelPos + ImGui.CalcTextSize(label);
+        var labelMinY = labelPos.Y;
 
         var toggleX = totalAvail > toggleWidth ? rowStart.X + totalAvail - toggleWidth : rowStart.X;
         ImGui.SetCursorPos(new Vector2(toggleX, rowStart.Y + (rowHeight - toggleHeight) * 0.5f));
@@ -416,12 +428,16 @@ public static class ModernUi
         var trackColor = value ? (hovered ? AccentHover : Accent) : (hovered ? ToggleOffHover : ToggleOff);
         var radius = height * 0.5f;
 
+        // GetColorU32() statt ColorConvertFloat4ToU32() - rechnet den von ImGui.BeginDisabled()
+        // gesetzten Alpha-Dimm-Faktor (style.Alpha) mit ein, sonst bleibt der Schalter bei
+        // ausgegrauten Zeilen (z.B. "Ignore Big Fish", solange "Desynthesis nach dem Angeln" aus
+        // ist) trotzdem voll sichtbar, während Label und Combo/Slider-Widgets sich korrekt abdunkeln.
         var drawList = ImGui.GetWindowDrawList();
-        drawList.AddRectFilled(pos, pos + new Vector2(width, height), ImGui.ColorConvertFloat4ToU32(trackColor), radius);
+        drawList.AddRectFilled(pos, pos + new Vector2(width, height), ImGui.GetColorU32(trackColor), radius);
 
         var knobRadius = radius - 2.5f;
         var knobX = value ? pos.X + width - radius : pos.X + radius;
-        drawList.AddCircleFilled(new Vector2(knobX, pos.Y + radius), knobRadius, ImGui.ColorConvertFloat4ToU32(Vector4.One), 32);
+        drawList.AddCircleFilled(new Vector2(knobX, pos.Y + radius), knobRadius, ImGui.GetColorU32(Vector4.One), 32);
 
         return changed;
     }
