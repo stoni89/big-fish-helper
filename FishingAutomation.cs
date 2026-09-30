@@ -1704,16 +1704,25 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
                 // Direkt nach dem Schließen des vorherigen Ergebnis-Fensters gilt der Charakter kurz
                 // noch als "Occupied" (Nutzer-Report: "Unable to execute command while occupied" im
-                // Chat, dadurch wurden nicht alle Fische desynthetisiert - SalvageItem schlug für den
-                // nächsten Fisch fehl, während der Charakter noch aus der vorherigen UI-Übergangs-
-                // Animation heraus kam) - erst abwarten, bis das wieder weg ist. Alle gängigen
-                // "in einem Menü/Fenster"-Varianten geprüft (Occupied30/33/38/39), nicht nur die
-                // einfache Occupied - welche davon genau beim Desynthesis-Fenster gesetzt ist, war
-                // ohne Live-Test nicht sicher zu bestimmen.
-                if (Plugin.Condition[ConditionFlag.Occupied] || Plugin.Condition[ConditionFlag.Occupied30]
-                    || Plugin.Condition[ConditionFlag.Occupied33] || Plugin.Condition[ConditionFlag.Occupied38]
-                    || Plugin.Condition[ConditionFlag.Occupied39])
-                    return;
+                // Chat) - erst abwarten, bis KEIN natives Desynthesis-Fenster mehr offen ist. Die
+                // vorherige Fassung hat dafür mehrere geratene Condition-Flags (Occupied/30/33/38/39)
+                // geprüft - die blieb aber hängen (Nutzer-Report: "macht keinen weiteren Fisch"),
+                // vermutlich weil eine davon während des gesamten Desynthesis-Vorgangs dauerhaft
+                // gesetzt ist, nicht nur in der kurzen Übergangsphase. Stattdessen jetzt der direkt
+                // relevante, konkrete Zustand: GameActions.IsAnySalvageWindowVisible - mit eigenem
+                // Timeout als Sicherheitsnetz, falls doch mal ein Fenster hängen bleibt (sonst würde
+                // die Automation hier für immer warten, ohne jemals weiterzumachen).
+                if (GameActions.IsAnySalvageWindowVisible())
+                {
+                    desynthesisStepStartedAt ??= now;
+                    if (now - desynthesisStepStartedAt.Value < DesynthesisResultTimeout)
+                        return;
+
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: natives Fenster blieb länger als erwartet offen - erzwinge Schließen.");
+                    GameActions.CloseDesynthesizeWindow();
+                }
+
+                desynthesisStepStartedAt = null;
 
                 if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))
                 {

@@ -518,4 +518,24 @@ public static class GameActions
                 addon->IsVisible = false;
         }
     }
+
+    /// <summary>
+    /// Ob irgendeines der vier nativen Desynthesis-Fenster noch sichtbar ist - für
+    /// FishingAutomation.UpdateDesynthesizing: direkt VOR dem nächsten SalvageItem-Aufruf abwarten,
+    /// bis das vorherige Ergebnis-Fenster wirklich weg ist (Nutzer-Report: geratene Condition-Flags
+    /// wie Occupied/Occupied30/33/38/39 waren dafür kein zuverlässiges Signal - die Simulation blieb
+    /// nach dem ersten Fisch stehen, obwohl noch welche im Inventar waren). Diese Prüfung fragt
+    /// direkt das tatsächlich relevante Fenster ab, statt eine Condition-Flag zu erraten.
+    /// </summary>
+    public static unsafe bool IsAnySalvageWindowVisible()
+    {
+        foreach (var name in SalvageAddonNames)
+        {
+            var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName(name).Address;
+            if (addon != null && addon->IsVisible)
+                return true;
+        }
+
+        return false;
+    }
 }
