@@ -440,6 +440,18 @@ public static class GameActions
                 if (slot == null || slot->IsEmpty() || slot->GetItemId() != itemId)
                     continue;
 
+                // Ein "Collectable"-Fisch (IsCollectable) kann das Spiel selbst gar nicht
+                // desynthetisieren - im nativen Kontextmenü fehlt dafür sogar der Eintrag
+                // "Desynthesize" komplett. Ein SalvageItem-Aufruf darauf öffnet deshalb nie ein
+                // SalvageDialog-Fenster (Nutzer-Report: 5s-Timeout ohne Fenster) - weitersuchen, ob
+                // vom selben Item noch ein NICHT-Collectable-Stack in einem anderen Slot liegt,
+                // statt blind auf dieser Instanz zu bestehen.
+                if (slot->IsCollectable())
+                {
+                    Plugin.Log.Info($"[GameActions] Item #{itemId} in Slot {i} ({bag}) ist \"Collectable\" - kann nicht desynthetisiert werden, übersprungen.");
+                    continue;
+                }
+
                 var agent = AgentSalvage.Instance();
                 if (agent == null)
                     return false;
