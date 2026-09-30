@@ -849,6 +849,25 @@ public class MainWindow : Window
             config.Save();
         }
 
+        // Untergeordnete Einstellung (Nutzeranforderung: "mit einem Pfeil, damit man sieht die
+        // Einstellungen gehören zusammen") - per "↳"-Präfix im Label an ToggleRow, nur bedienbar,
+        // solange "Desynthesis nach dem Angeln" selbst aktiv ist.
+        if (!desynthesisAfterFishing)
+            ImGui.BeginDisabled();
+
+        var desynthesisIgnoreBigFish = config.DesynthesisIgnoreBigFish;
+        if (ModernUi.ToggleRow(Loc.T("↳ Big Fish ignorieren", "↳ Ignore Big Fish"), ref desynthesisIgnoreBigFish,
+                Loc.T(
+                    "Desynthese von allen Fischen mit Ausnahme von Big Fish.",
+                    "Desynthesize all fish except Big Fish.")))
+        {
+            config.DesynthesisIgnoreBigFish = desynthesisIgnoreBigFish;
+            config.Save();
+        }
+
+        if (!desynthesisAfterFishing)
+            ImGui.EndDisabled();
+
         ModernUi.EndCard();
 
         ModernUi.GroupLabel(Loc.T("Anflug", "Travel"));

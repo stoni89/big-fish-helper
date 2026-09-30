@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using Lumina.Excel.Sheets;
 
@@ -25,17 +26,35 @@ public static class FishCatchState
 
     private static uint? GetFishParameterId(uint itemId)
     {
-        if (fishParameterByItemId == null)
-        {
-            fishParameterByItemId = new Dictionary<uint, uint>();
-            foreach (var row in Plugin.DataManager.GetExcelSheet<FishParameter>())
-            {
-                var item = row.Item.RowId;
-                if (item != 0)
-                    fishParameterByItemId.TryAdd(item, row.RowId);
-            }
-        }
+        EnsureFishParameterByItemId();
+        return fishParameterByItemId!.TryGetValue(itemId, out var id) ? id : null;
+    }
 
-        return fishParameterByItemId.TryGetValue(itemId, out var id) ? id : null;
+    /// <summary>
+    /// Alle Item-Ids, die im Fischer-Logbuch auftauchen (jeder normale UND Big Fish, siehe
+    /// FishParameter-Sheet) - für "Desynthesis nach dem Angeln" (Nutzeranforderung: standardmäßig
+    /// ALLE Fische desynthetisieren, nicht nur die in BigFishData gepflegten).
+    /// </summary>
+    public static IReadOnlySet<uint> AllFishItemIds
+    {
+        get
+        {
+            EnsureFishParameterByItemId();
+            return fishParameterByItemId!.Keys.ToHashSet();
+        }
+    }
+
+    private static void EnsureFishParameterByItemId()
+    {
+        if (fishParameterByItemId != null)
+            return;
+
+        fishParameterByItemId = new Dictionary<uint, uint>();
+        foreach (var row in Plugin.DataManager.GetExcelSheet<FishParameter>())
+        {
+            var item = row.Item.RowId;
+            if (item != 0)
+                fishParameterByItemId.TryAdd(item, row.RowId);
+        }
     }
 }

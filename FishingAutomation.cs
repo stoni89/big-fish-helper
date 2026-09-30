@@ -1635,7 +1635,16 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     {
         if (desynthesisQueue == null)
         {
-            var fishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+            // Standardmäßig ALLE Fische (FishCatchState.AllFishItemIds, aus dem Fischer-Logbuch) -
+            // mit "Big Fish ignorieren" (Nutzeranforderung) werden die in BigFishData gepflegten
+            // Big Fish davon ausgenommen.
+            var fishItemIds = FishCatchState.AllFishItemIds;
+            if (plugin.Configuration.DesynthesisIgnoreBigFish)
+            {
+                var bigFishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
+                fishItemIds = fishItemIds.Where(id => !bigFishItemIds.Contains(id)).ToHashSet();
+            }
+
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
             desynthesisStep = DesynthesisStep.SelectingItem;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
