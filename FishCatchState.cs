@@ -30,17 +30,37 @@ public static class FishCatchState
         return fishParameterByItemId!.TryGetValue(itemId, out var id) ? id : null;
     }
 
+    private static HashSet<uint>? allFishItemIdsCache;
+
     /// <summary>
-    /// Alle Item-Ids, die im Fischer-Logbuch auftauchen (jeder normale UND Big Fish, siehe
-    /// FishParameter-Sheet) - für "Desynthesis nach dem Angeln" (Nutzeranforderung: standardmäßig
-    /// ALLE Fische desynthetisieren, nicht nur die in BigFishData gepflegten).
+    /// Alle Item-Ids der ItemUICategory "Fish" mit Desynth > 0 - für "Desynthesis nach dem Angeln"
+    /// (Nutzeranforderung: "wirklich alle Desynthesen die auch im nativen Desynthesis Fenster drin
+    /// sind"). Bewusst NICHT mehr über das FishParameter-Sheet (Fischer-Logbuch) - das deckt z.B.
+    /// Ocean-Fishing-exklusive Fänge wie "Speckled Peacock Bass"/"Goldgrouper" gar nicht ab (Nutzer-
+    /// Report: die blieben im Inventar liegen), während die ItemUICategory JEDEN Fisch erfasst, den
+    /// auch das native Desynthesis-Fenster selbst anbieten würde. Die Kategorie wird explizit auf
+    /// Englisch abgefragt (unabhängig von der Client-Sprache), damit der Namensvergleich zuverlässig
+    /// bleibt.
     /// </summary>
     public static IReadOnlySet<uint> AllFishItemIds
     {
         get
         {
-            EnsureFishParameterByItemId();
-            return fishParameterByItemId!.Keys.ToHashSet();
+            if (allFishItemIdsCache != null)
+                return allFishItemIdsCache;
+
+            var categorySheet = Plugin.DataManager.GetExcelSheet<ItemUICategory>(Dalamud.Game.ClientLanguage.English);
+            var fishCategoryIds = categorySheet
+                .Where(c => string.Equals(c.Name.ToString(), "Fish", System.StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.RowId)
+                .ToHashSet();
+
+            allFishItemIdsCache = Plugin.DataManager.GetExcelSheet<Item>()
+                .Where(i => i.Desynth > 0 && fishCategoryIds.Contains(i.ItemUICategory.RowId))
+                .Select(i => i.RowId)
+                .ToHashSet();
+
+            return allFishItemIdsCache;
         }
     }
 

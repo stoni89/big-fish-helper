@@ -1670,11 +1670,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     {
         if (desynthesisQueue == null)
         {
-            // Standardmäßig ALLE Fische (FishCatchState.AllFishItemIds, aus dem Fischer-Logbuch) -
-            // mit "Big Fish ignorieren" (Nutzeranforderung) werden die in BigFishData gepflegten
-            // Big Fish davon ausgenommen. Schatzkarten (z.B. "Timeworn Braaxskin Map") sind über
-            // manche Angel-Plätze ebenfalls als "Fang" im Fischer-Logbuch (FishParameter) gelistet,
-            // dürfen aber nie desynthetisiert werden (Nutzeranforderung) - siehe IsTreasureMapItem.
+            // Standardmäßig ALLE Fische (FishCatchState.AllFishItemIds, ItemUICategory "Fish" mit
+            // Desynth > 0 - Nutzeranforderung: "wirklich alle Desynthesen die auch im nativen
+            // Desynthesis Fenster drin sind") - mit "Big Fish ignorieren" (Nutzeranforderung) werden
+            // die in BigFishData gepflegten Big Fish davon ausgenommen. IsTreasureMapItem bleibt als
+            // zusätzliche Absicherung (Schatzkarten dürfen nie desynthetisiert werden), auch wenn
+            // Desynth > 0 das eigentlich schon ausschließen sollte.
             var fishItemIds = FishCatchState.AllFishItemIds.Where(id => !IsTreasureMapItem(id)).ToHashSet();
             if (plugin.Configuration.DesynthesisIgnoreBigFish)
             {
