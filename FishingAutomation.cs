@@ -87,7 +87,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Kommentare): der Charakter braucht nach dem Schließen des Ergebnis-Fensters offenbar länger,
     // bis ein neuer Aufruf sicher nicht mehr als "Occupied" abgelehnt wird, als beide Prüfungen
     // zusammen erkennen konnten.
-    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(6);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -1698,6 +1698,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
             // Aufruf dieses Laufs passiert - ein von einem vorherigen (z.B. abgebrochenen Test-)Lauf
             // noch hängendes Fenster/AgentSalvage-Zustand könnte sonst den ersten Aufruf blockieren.
             GameActions.CloseDesynthesizeWindow();
+
+            // DesynthesisInterItemDelay galt bisher nur ZWISCHEN zwei Fischen, nicht vor dem ALLER-
+            // ERSTEN Aufruf dieses Laufs (Nutzer-Report: bei einem frischen Lauf schlug gleich der
+            // erste Fisch fehl) - jetzt auch hier gesetzt, damit selbst der erste Versuch denselben
+            // Sicherheitsabstand bekommt.
+            desynthesisNextAttemptEarliestAt = DateTime.UtcNow + DesynthesisInterItemDelay;
 
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
             desynthesisStep = DesynthesisStep.SelectingItem;
