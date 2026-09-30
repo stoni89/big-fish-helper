@@ -33,14 +33,15 @@ public static class FishCatchState
     private static HashSet<uint>? allFishItemIdsCache;
 
     /// <summary>
-    /// Alle Item-Ids der ItemUICategory "Fish" mit Desynth > 0 - für "Desynthesis nach dem Angeln"
-    /// (Nutzeranforderung: "wirklich alle Desynthesen die auch im nativen Desynthesis Fenster drin
-    /// sind"). Bewusst NICHT mehr über das FishParameter-Sheet (Fischer-Logbuch) - das deckt z.B.
-    /// Ocean-Fishing-exklusive Fänge wie "Speckled Peacock Bass"/"Goldgrouper" gar nicht ab (Nutzer-
-    /// Report: die blieben im Inventar liegen), während die ItemUICategory JEDEN Fisch erfasst, den
-    /// auch das native Desynthesis-Fenster selbst anbieten würde. Die Kategorie wird explizit auf
-    /// Englisch abgefragt (unabhängig von der Client-Sprache), damit der Namensvergleich zuverlässig
-    /// bleibt.
+    /// Alle Item-Ids aus dem Fischer-Logbuch (FishParameter) PLUS aller Items der ItemUICategory
+    /// "Fish" (jeweils mit Desynth > 0) - für "Desynthesis nach dem Angeln" (Nutzeranforderung:
+    /// "wirklich alle Desynthesen die auch im nativen Desynthesis Fenster drin sind"). Das
+    /// FishParameter-Sheet allein deckt z.B. Ocean-Fishing-exklusive Fänge wie "Speckled Peacock
+    /// Bass"/"Goldgrouper" nicht ab (Nutzer-Report: die blieben im Inventar liegen) - die
+    /// ItemUICategory ergänzt genau solche Fälle. BEWUSST als Vereinigung, nicht als Ersatz: der
+    /// Kategorie-Name "Fish" ist clientseitig nicht live verifizierbar (Nutzer-Report: eine frühere
+    /// Fassung, die NUR auf der Kategorie beruhte, fand dadurch plötzlich GAR KEINEN Fisch mehr) -
+    /// das Fischer-Logbuch bleibt so in jedem Fall als funktionierende Mindestbasis erhalten.
     /// </summary>
     public static IReadOnlySet<uint> AllFishItemIds
     {
@@ -49,20 +50,35 @@ public static class FishCatchState
             if (allFishItemIdsCache != null)
                 return allFishItemIdsCache;
 
+            EnsureFishParameterByItemId();
+            var itemIds = new HashSet<uint>(fishParameterByItemId!.Keys);
+
             var categorySheet = Plugin.DataManager.GetExcelSheet<ItemUICategory>(Dalamud.Game.ClientLanguage.English);
             var fishCategoryIds = categorySheet
                 .Where(c => string.Equals(c.Name.ToString(), "Fish", System.StringComparison.OrdinalIgnoreCase))
                 .Select(c => c.RowId)
                 .ToHashSet();
 
-            allFishItemIdsCache = Plugin.DataManager.GetExcelSheet<Item>()
-                .Where(i => i.Desynth > 0 && fishCategoryIds.Contains(i.ItemUICategory.RowId))
-                .Select(i => i.RowId)
-                .ToHashSet();
+            if (fishCategoryIds.Count == 0)
+            {
+                Plugin.Log.Warning("[FishCatchState] ItemUICategory \"Fish\" nicht gefunden - nutze nur das Fischer-Logbuch als Quelle für Desynthesis.");
+            }
+            else
+            {
+                foreach (var item in Plugin.DataManager.GetExcelSheet<Item>())
+                {
+                    if (fishCategoryIds.Contains(item.ItemUICategory.RowId))
+                        itemIds.Add(item.RowId);
+                }
+            }
 
+            allFishItemIdsCache = itemIds.Where(id => IsDesynthesizable(id)).ToHashSet();
             return allFishItemIdsCache;
         }
     }
+
+    private static bool IsDesynthesizable(uint itemId) =>
+        Plugin.DataManager.GetExcelSheet<Item>().TryGetRow(itemId, out var item) && item.Desynth > 0;
 
     private static void EnsureFishParameterByItemId()
     {
