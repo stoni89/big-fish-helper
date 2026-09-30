@@ -481,17 +481,6 @@ public static class GameActions
                     agent->IsSalvageResultAddonOpen = false;
                 }
 
-                // Nutzer-Report: SalvageItem öffnet kein Fenster, obwohl laut Diagnose weder Occupied
-                // noch ein sichtbares Salvage-Fenster vorliegt - AgentSalvage.IsAgentActive() (echte
-                // Aktivierung des zugrunde liegenden Agenten, unabhängig von der Addon-Sichtbarkeit)
-                // ist vermutlich der eigentliche Schalter: SalvageItem scheint nur zu wirken, wenn der
-                // Agent selbst gerade aktiv ist. Vorsorglich aktivieren, bevor SalvageItem aufgerufen wird.
-                if (!agent->IsAgentActive())
-                {
-                    Plugin.Log.Info("[GameActions] AgentSalvage war nicht aktiv - aktiviere vor SalvageItem.");
-                    agent->Show();
-                }
-
                 agent->SalvageItem(slot, (int)slot->GetQuantity(), 0);
                 Plugin.Log.Info($"[GameActions] Desynthetisiere Item #{itemId} (Menge {slot->GetQuantity()}).");
                 return true;
@@ -631,5 +620,24 @@ public static class GameActions
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Namen ALLER gerade sichtbaren nativen Desynthesis-Fenster (durch Komma getrennt, "keins" wenn
+    /// leer) - Diagnose für FishingAutomation.UpdateDesynthesizing: IsAnySalvageWindowVisible allein
+    /// sagt nicht, WELCHES der vier Fenster es ist (Nutzer-Report: war bei einem Timeout schon einmal
+    /// true, obwohl "SalvageDialog" selbst nicht erschien - vermutlich stattdessen "SalvageItemSelector").
+    /// </summary>
+    public static unsafe string GetVisibleSalvageWindowNames()
+    {
+        var visible = new List<string>();
+        foreach (var name in SalvageAddonNames)
+        {
+            var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName(name).Address;
+            if (addon != null && addon->IsVisible)
+                visible.Add(name);
+        }
+
+        return visible.Count > 0 ? string.Join(", ", visible) : "keins";
     }
 }

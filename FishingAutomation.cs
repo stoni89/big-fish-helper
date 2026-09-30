@@ -1781,7 +1781,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                         $"Occupied33={Plugin.Condition[ConditionFlag.Occupied33]}, Occupied38={Plugin.Condition[ConditionFlag.Occupied38]}, " +
                         $"Occupied39={Plugin.Condition[ConditionFlag.Occupied39]}, Casting={Plugin.Condition[ConditionFlag.Casting]}, " +
                         $"Fishing={Plugin.Condition[ConditionFlag.Fishing]}, Mounted={Plugin.Condition[ConditionFlag.Mounted]}, " +
-                        $"AnySalvageWindowVisible={GameActions.IsAnySalvageWindowVisible()}.");
+                        $"SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
                     desynthesisQueue.RemoveAt(0);
                     desynthesisStep = DesynthesisStep.SelectingItem;
                 }
