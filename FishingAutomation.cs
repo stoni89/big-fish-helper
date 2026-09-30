@@ -75,13 +75,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private const int DesynthesisMinFreeMinutes = 10;
     // Siehe UpdateDesynthesizing/DesynthesisStep - wie lange maximal auf das Erscheinen von
     // SalvageDialog (nach SalvageItem) bzw. SalvageResult (nach Desynthesize) gewartet wird, bevor der
-    // Stack übersprungen bzw. einfach weitergemacht wird. Nutzer-Report: die Fisch-Menge sinkt auch
-    // nach einem gemeldeten Timeout noch weiter (z.B. 11 -> 10 zwischen zwei "nicht erschienen"-
-    // Meldungen) - die eigentliche Desynthese scheint im Hintergrund deutlich länger als 5s zu
-    // brauchen (vermutlich Server-Antwortzeit), bevor irgendetwas sichtbar wird. Deutlich großzügiger
-    // bemessen, damit die Automation nicht vorzeitig aufgibt, während die Aktion noch läuft.
-    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(20);
+    // Stack übersprungen bzw. einfach weitergemacht wird. Ein längeres Timeout (20s) hat NICHTS
+    // gebracht (Nutzer-Report) - zurück auf kurz, die eigentliche Ursache liegt woanders (siehe
+    // SelectingItem-Kommentar: die Menge sinkt trotz "nicht erschienen" weiter, das Item wird also
+    // TROTZDEM erfolgreich desynthetisiert, nur ohne dass SalvageDialog je sichtbar wird).
+    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
     // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
     // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
     private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
@@ -91,7 +90,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Kommentare): der Charakter braucht nach dem Schließen des Ergebnis-Fensters offenbar länger,
     // bis ein neuer Aufruf sicher nicht mehr als "Occupied" abgelehnt wird, als beide Prüfungen
     // zusammen erkennen konnten.
-    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(6);
+    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(2);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -238,6 +237,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Siehe DesynthesisInterItemDelay - ab wann der NÄCHSTE SalvageItem-Aufruf frühestens erlaubt
     // ist, unabhängig davon, ob Fenster/Occupied-Prüfungen schon "grün" melden.
     private DateTime desynthesisNextAttemptEarliestAt = DateTime.MinValue;
+    private uint desynthesisQuantityBeforeAttempt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -1751,6 +1751,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
                 desynthesisStepStartedAt = null;
 
+                // VOR dem Aufruf gemerkt (Nutzer-Report: die Menge sinkt oft trotzdem, obwohl
+                // SalvageDialog laut unserer Prüfung nie erschien - das Item wird also TROTZDEM
+                // erfolgreich desynthetisiert, nur unsichtbar für uns) - siehe WaitingForDialog-Timeout,
+                // das damit einen echten Fehlschlag von einem nur unsichtbaren Erfolg unterscheidet.
+                desynthesisQuantityBeforeAttempt = GameActions.GetInventoryItemCount(desynthesisQueue[0]);
+
                 if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))
                 {
                     // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
@@ -1777,6 +1783,24 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 }
                 else if (now - desynthesisStepStartedAt!.Value > DesynthesisDialogTimeout)
                 {
+                    // Nutzer-Report: die Menge sinkt trotz "SalvageDialog nicht erschienen" oft
+                    // trotzdem weiter - SalvageItem scheint manchmal komplett ohne sichtbares Fenster
+                    // durchzulaufen. Deshalb hier NICHT blind als Fehlschlag werten, sondern die
+                    // tatsächliche Menge gegen den vor dem Aufruf gemerkten Wert prüfen (siehe
+                    // SelectingItem/desynthesisQuantityBeforeAttempt) - hat sie sich verringert, war
+                    // es ein (unsichtbarer) Erfolg, einfach mit demselben Fisch weitermachen statt
+                    // ihn als gescheitert zu überspringen.
+                    var currentQuantity = GameActions.GetInventoryItemCount(desynthesisQueue[0]);
+                    if (currentQuantity < desynthesisQuantityBeforeAttempt)
+                    {
+                        Plugin.Log.Info($"[FishingAutomation] Desynthesis: SalvageDialog nie sichtbar geworden, Menge sank aber " +
+                            $"{desynthesisQuantityBeforeAttempt} -> {currentQuantity} - werte als Erfolg, mache weiter.");
+                        if (currentQuantity == 0)
+                            desynthesisQueue.RemoveAt(0);
+                        desynthesisStep = DesynthesisStep.SelectingItem;
+                        break;
+                    }
+
                     // Diagnose (Nutzeranforderung: weiterhin "SalvageDialog nicht erschienen" trotz
                     // Delay/Occupied-Guard) - loggt den tatsächlichen Zustand in genau diesem Moment,
                     // statt weiter zu raten, welches Flag/welche Ursache wirklich zutrifft.
