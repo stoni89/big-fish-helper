@@ -1672,8 +1672,10 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         {
             // Standardmäßig ALLE Fische (FishCatchState.AllFishItemIds, aus dem Fischer-Logbuch) -
             // mit "Big Fish ignorieren" (Nutzeranforderung) werden die in BigFishData gepflegten
-            // Big Fish davon ausgenommen.
-            var fishItemIds = FishCatchState.AllFishItemIds;
+            // Big Fish davon ausgenommen. Schatzkarten (z.B. "Timeworn Braaxskin Map") sind über
+            // manche Angel-Plätze ebenfalls als "Fang" im Fischer-Logbuch (FishParameter) gelistet,
+            // dürfen aber nie desynthetisiert werden (Nutzeranforderung) - siehe IsTreasureMapItem.
+            var fishItemIds = FishCatchState.AllFishItemIds.Where(id => !IsTreasureMapItem(id)).ToHashSet();
             if (plugin.Configuration.DesynthesisIgnoreBigFish)
             {
                 var bigFishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
@@ -1749,6 +1751,19 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 break;
         }
     }
+
+    /// <summary>
+    /// Ob ein Item eine Schatzkarte ist (z.B. "Timeworn Braaxskin Map") - namensbasiert erkannt, da
+    /// Lumina keine eigene, klar abgrenzbare ItemUICategory dafür hat: alle Schatzkarten im Spiel
+    /// heißen durchgängig "Timeworn ... Map" (Englisch). Für UpdateDesynthesizing (Nutzeranforderung:
+    /// "Maps niemals Desynthesis verwenden") - manche Angel-Plätze listen Schatzkarten als "Fang" im
+    /// Fischer-Logbuch (FishParameter), FishCatchState.AllFishItemIds würde sie sonst mit einschließen.
+    /// </summary>
+    private static bool IsTreasureMapItem(uint itemId) =>
+        Plugin.DataManager.GetExcelSheet<Lumina.Excel.Sheets.Item>().TryGetRow(itemId, out var item)
+        && item.Name.ToString() is { } name
+        && name.StartsWith("Timeworn", StringComparison.OrdinalIgnoreCase)
+        && name.EndsWith("Map", StringComparison.OrdinalIgnoreCase);
 
     // ---- Hilfen ----
 
