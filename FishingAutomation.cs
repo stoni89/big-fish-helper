@@ -64,7 +64,6 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private static readonly TimeSpan SettleDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan JobSwitchTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan FaceSettleDelay = TimeSpan.FromSeconds(1.5);
-    private static readonly TimeSpan RestartInterval = TimeSpan.FromSeconds(10);
     // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
     // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
     private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
@@ -1537,25 +1536,16 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         lastActionAt = now; // nach SetState - sonst würde sofort erneut ausgelöst
     }
 
+    // Nutzeranforderung: "/ahstart nur zu Beginn senden... danach nicht mehr, das macht AutoHook
+    // alles von alleine" - kein periodischer Neustart-Versuch mehr hier (der frühere "Angel ruht zu
+    // lange"-Fallback kollidierte mit AutoHooks eigenen Wurfversuchen, siehe
+    // "[AutoHook] You can't cast right now"-Spam im Chat).
     private void UpdateFishing(DateTime now)
     {
         var remaining = now < targetWindow.StartUtc
             ? Loc.T($"Fenster in {FormatSpan(targetWindow.StartUtc - now)}", $"window in {FormatSpan(targetWindow.StartUtc - now)}")
             : Loc.T($"noch {FormatSpan(targetWindow.EndUtc - now)}", $"{FormatSpan(targetWindow.EndUtc - now)} left");
         StatusText = Loc.T($"Angle auf {FishName(target!)} ({remaining})", $"Fishing for {FishName(target!)} ({remaining})");
-
-        // AutoHook wirft normalerweise selbst neu aus - ruht die Angel doch einmal länger, die
-        // Start-Aktionen erneut auslösen. NUR wenn Auswerfen gerade auch tatsächlich möglich wäre
-        // (GameActions.CanCastFishingRod) - sonst steckt AutoHook meist schon selbst in einem eigenen
-        // Versuch/Cooldown, und unser zusätzlicher /ahstart mischt sich nur ein statt zu helfen
-        // (Nutzer-Report: "sendet während dem Angeln weitere AutoHook Befehle, was er nicht machen
-        // soll" - sichtbar an wiederholten "[AutoHook] You can't cast right now"-Meldungen im Chat).
-        if (!Plugin.Condition[ConditionFlag.Fishing] && now - lastActionAt > RestartInterval && GameActions.CanCastFishingRod())
-        {
-            lastActionAt = now;
-            FaceWater();
-            PressAutoHookStartActions();
-        }
     }
 
     private static void PressAutoHookStartActions()
