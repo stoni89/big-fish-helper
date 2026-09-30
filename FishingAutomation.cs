@@ -522,6 +522,26 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // ---- Warten auf den nächsten Fisch ----
 
     /// <summary>Ob für diesen Fisch eine Angel-Position eingetragen ist (sonst kann die Automation ihn nicht anfliegen).</summary>
+    /// <summary>
+    /// Debug: startet EXAKT denselben Ablauf wie "Desynthesis nach dem Angeln" (State.Desynthesizing,
+    /// siehe UpdateDesynthesizing) - ohne echten Fischgang, zum Testen ohne auf die Einstellung UND
+    /// einen echten Fang warten zu müssen (Nutzeranforderung: Debug -> Desynthesis-Simulation). Nur
+    /// nutzbar, solange nicht schon eine normale Automation läuft.
+    /// </summary>
+    public bool StartDesynthesisSimulation()
+    {
+        if (IsRunning)
+            return false;
+
+        IsRunning = true;
+        target = null;
+        targetPosition = null;
+        SetState(State.Desynthesizing);
+        StatusText = Loc.T("Debug: Desynthesis-Simulation gestartet...", "Debug: desynthesis simulation started...");
+        Plugin.Log.Info("[FishingAutomation] Debug: Desynthesis-Simulation gestartet.");
+        return true;
+    }
+
     public bool CanReach(BigFish fish) => FishingPositionStore.GetAll(fish.ItemId).Count > 0;
 
     /// <summary>

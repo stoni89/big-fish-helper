@@ -966,6 +966,36 @@ public class MainWindow : Window
                                     $"{playerPos.Value.Z.ToString(CultureInfo.InvariantCulture)}f");
         }
         ModernUi.EndCard();
+
+        // Desynthesis-Simulation (Nutzeranforderung) - startet EXAKT denselben Ablauf wie
+        // "Desynthesis nach dem Angeln" (FishingAutomation.StartDesynthesisSimulation ->
+        // State.Desynthesizing/UpdateDesynthesizing), ohne auf die Einstellung UND einen echten Fang
+        // warten zu müssen.
+        ModernUi.GroupLabel(Loc.T("Desynthesis-Simulation", "Desynthesis simulation"));
+        ModernUi.BeginCard();
+        var automation = plugin.Automation;
+        var simulationRunning = automation.IsRunning;
+        if (simulationRunning)
+            ImGui.BeginDisabled();
+        if (ImGui.Button(Loc.T("Desynthesis simulieren", "Simulate desynthesis") + "##StartDesynthesisSimulation"))
+            automation.StartDesynthesisSimulation();
+        if (simulationRunning)
+        {
+            ImGui.EndDisabled();
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            {
+                ImGui.SetTooltip(Loc.T(
+                    "Läuft bereits eine Automation (oder eine andere Simulation) - erst stoppen.",
+                    "An automation (or another simulation) is already running - stop it first."));
+            }
+        }
+
+        if (!string.IsNullOrEmpty(automation.StatusText))
+            ImGui.TextColored(automation.IsRunning ? ModernUi.Accent : ModernUi.TextMuted, automation.StatusText);
+
+        if (automation.IsRunning && ImGui.Button(Loc.T("Stopp", "Stop") + "##StopDesynthesisSimulation"))
+            automation.Stop();
+        ModernUi.EndCard();
     }
 
     /// <summary>
