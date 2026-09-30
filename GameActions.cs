@@ -359,8 +359,17 @@ public static class GameActions
             for (var i = 0; i < container->GetSize(); i++)
             {
                 var slot = container->GetInventorySlot(i);
-                if (slot != null && !slot->IsEmpty() && itemIds.Contains(slot->GetItemId()))
-                    result.Add(slot->GetItemId());
+                if (slot == null || slot->IsEmpty())
+                    continue;
+
+                // GetBaseItemId() statt GetItemId() (Nutzer-Report: "Goldgrouper" - ein Collectable-
+                // Fisch - wurde trotz korrekter Kategorie/Desynth-Daten nie gefunden) - GetItemId()
+                // liefert bei besonderen Instanzen (z.B. Collectables) offenbar eine abweichende/
+                // kodierte Id, GetBaseItemId() dagegen die echte Katalog-Id aus dem Item-Sheet, gegen
+                // die itemIds hier verglichen wird.
+                var baseItemId = slot->GetBaseItemId();
+                if (itemIds.Contains(baseItemId))
+                    result.Add(baseItemId);
             }
         }
 
@@ -399,7 +408,10 @@ public static class GameActions
                 if (slot == null || slot->IsEmpty())
                     continue;
 
-                var itemId = slot->GetItemId();
+                // GetBaseItemId() statt GetItemId() - siehe FindInventoryItemIds-Kommentar
+                // (Collectable-Instanzen wie Goldgrouper wurden über GetItemId() nie gefunden, weil
+                // dessen zurückgegebene Id für solche Instanzen von der Katalog-Id abweicht).
+                var itemId = slot->GetBaseItemId();
 
                 // NICHT auf fishItemIds.Contains vorgefiltert (Nutzer-Report: Goldgrouper #43775
                 // bleibt trotz Kategorie "Seafood"/Desynth>0 unerklärlich unentdeckt) - stattdessen
@@ -448,7 +460,9 @@ public static class GameActions
             for (var i = 0; i < container->GetSize(); i++)
             {
                 var slot = container->GetInventorySlot(i);
-                if (slot == null || slot->IsEmpty() || slot->GetItemId() != itemId)
+                // GetBaseItemId() statt GetItemId() - siehe FindInventoryItemIds-Kommentar
+                // (Collectable-Instanzen wurden über GetItemId() nie gefunden).
+                if (slot == null || slot->IsEmpty() || slot->GetBaseItemId() != itemId)
                     continue;
 
                 var agent = AgentSalvage.Instance();
