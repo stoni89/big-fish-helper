@@ -53,23 +53,30 @@ public static class FishCatchState
             EnsureFishParameterByItemId();
             var itemIds = new HashSet<uint>(fishParameterByItemId!.Keys);
 
+            // Nutzer-Screenshot zeigte die Inventar-Sortierkategorie tatsächlich als "Seafood", nicht
+            // "Fish" (der erste, falsche Versuch) - beide Namen akzeptiert, da ohne Live-Zugriff auf
+            // die Spieldaten nicht sicher war, welcher davon dem tatsächlichen ItemUICategory-Namen
+            // entspricht.
             var categorySheet = Plugin.DataManager.GetExcelSheet<ItemUICategory>(Dalamud.Game.ClientLanguage.English);
             var fishCategoryIds = categorySheet
-                .Where(c => string.Equals(c.Name.ToString(), "Fish", System.StringComparison.OrdinalIgnoreCase))
+                .Where(c => c.Name.ToString() is "Fish" or "Seafood")
                 .Select(c => c.RowId)
                 .ToHashSet();
 
             if (fishCategoryIds.Count == 0)
             {
-                Plugin.Log.Warning("[FishCatchState] ItemUICategory \"Fish\" nicht gefunden - nutze nur das Fischer-Logbuch als Quelle für Desynthesis.");
+                Plugin.Log.Warning("[FishCatchState] ItemUICategory \"Fish\"/\"Seafood\" nicht gefunden - nutze nur das Fischer-Logbuch als Quelle für Desynthesis.");
             }
             else
             {
+                var beforeCount = itemIds.Count;
                 foreach (var item in Plugin.DataManager.GetExcelSheet<Item>())
                 {
                     if (fishCategoryIds.Contains(item.ItemUICategory.RowId))
                         itemIds.Add(item.RowId);
                 }
+
+                Plugin.Log.Info($"[FishCatchState] ItemUICategory-Treffer: {fishCategoryIds.Count} Kategorie(n), {itemIds.Count - beforeCount} zusätzliche Item-Ids (vorher {beforeCount}, Fischer-Logbuch).");
             }
 
             allFishItemIdsCache = itemIds.Where(id => IsDesynthesizable(id)).ToHashSet();
