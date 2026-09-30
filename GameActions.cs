@@ -368,6 +368,52 @@ public static class GameActions
     }
 
     /// <summary>
+    /// Debug: loggt jeden Fisch im Hauptinventar, der laut FishCatchState.AllFishItemIds aktuell für
+    /// "Desynthesis nach dem Angeln" infrage käme (Item-Id, Name, Menge, Tasche/Slot) - zum Prüfen
+    /// ohne echten Testlauf, ob/welche Fische überhaupt gefunden werden (Nutzeranforderung: Debug-
+    /// Knopf für eine Liste im Log).
+    /// </summary>
+    public static unsafe void DumpDesynthesizableFishInInventory()
+    {
+        var fishItemIds = FishCatchState.AllFishItemIds;
+        Plugin.Log.Info($"[GameActions] Desynthesis-Debug: {fishItemIds.Count} bekannte Fisch-Item-Ids insgesamt (FishCatchState.AllFishItemIds).");
+
+        var manager = InventoryManager.Instance();
+        if (manager == null)
+        {
+            Plugin.Log.Warning("[GameActions] Desynthesis-Debug: InventoryManager nicht verfügbar.");
+            return;
+        }
+
+        var itemSheet = Plugin.DataManager.GetExcelSheet<Item>();
+        var found = 0;
+        foreach (var bag in MainInventoryBags)
+        {
+            var container = manager->GetInventoryContainer(bag);
+            if (container == null)
+                continue;
+
+            for (var i = 0; i < container->GetSize(); i++)
+            {
+                var slot = container->GetInventorySlot(i);
+                if (slot == null || slot->IsEmpty())
+                    continue;
+
+                var itemId = slot->GetItemId();
+                if (!fishItemIds.Contains(itemId))
+                    continue;
+
+                found++;
+                var name = itemSheet.TryGetRow(itemId, out var item) ? item.Name.ToString() : "?";
+                Plugin.Log.Info($"[GameActions] Desynthesis-Debug:   #{itemId} '{name}' x{slot->GetQuantity()} ({bag}, Slot {i}).");
+            }
+        }
+
+        if (found == 0)
+            Plugin.Log.Info("[GameActions] Desynthesis-Debug: kein passender Fisch im Hauptinventar gefunden.");
+    }
+
+    /// <summary>
     /// Desynthetisiert EINEN vollen Stack eines Items im Hauptinventar über die native Spielfunktion
     /// (AgentSalvage.SalvageItem) statt über ein Fremd-Plugin wie PandorasBox (Nutzeranforderung: "ich
     /// würde ungern Pandora Box als Required Plugin einbauen"). Gibt false zurück, wenn das Item nicht

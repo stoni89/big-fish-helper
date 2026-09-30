@@ -995,6 +995,13 @@ public class MainWindow : Window
 
         if (automation.IsRunning && ImGui.Button(Loc.T("Stopp", "Stop") + "##StopDesynthesisSimulation"))
             automation.Stop();
+
+        ModernUi.CardDivider();
+        if (ImGui.Button(Loc.T("Fisch-Liste ins Log schreiben", "Log fish list") + "##DumpDesynthesizableFish"))
+            GameActions.DumpDesynthesizableFishInInventory();
+        ImGui.TextColored(ModernUi.TextMuted, Loc.T(
+            "Listet im Log, welche Fische aktuell im Hauptinventar für Desynthesis erkannt werden.",
+            "Logs which fish in the main inventory are currently recognized for desynthesis."));
         ModernUi.EndCard();
     }
 
