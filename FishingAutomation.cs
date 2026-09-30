@@ -78,6 +78,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Stack übersprungen bzw. einfach weitergemacht wird.
     private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
+    // Nutzer-Report: derselbe Fisch/dieselbe Item-Id öffnet den SalvageDialog MAL, ein anderes Mal
+    // (identische Item-Daten laut Lumina) nicht - der allererste SalvageItem-Aufruf scheint also
+    // gelegentlich stillschweigend zu verpuffen. Statt nur passiv bis DesynthesisDialogTimeout zu
+    // warten, wird der Aufruf deshalb in diesem Abstand wiederholt.
+    private static readonly TimeSpan DesynthesisDialogRetryInterval = TimeSpan.FromSeconds(1.5);
     // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
     // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
     private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
@@ -224,6 +229,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private List<uint>? desynthesisQueue;
     private DesynthesisStep desynthesisStep;
     private DateTime? desynthesisStepStartedAt;
+    private DateTime? desynthesisLastDialogRetryAt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -1737,6 +1743,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 }
 
                 desynthesisStepStartedAt = now;
+                desynthesisLastDialogRetryAt = now;
                 desynthesisStep = DesynthesisStep.WaitingForDialog;
                 break;
 
@@ -1751,6 +1758,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                     Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack.");
                     desynthesisQueue.RemoveAt(0);
                     desynthesisStep = DesynthesisStep.SelectingItem;
+                }
+                else if (now - desynthesisLastDialogRetryAt!.Value > DesynthesisDialogRetryInterval)
+                {
+                    desynthesisLastDialogRetryAt = now;
+                    Plugin.Log.Info("[FishingAutomation] Desynthesis: SalvageDialog noch nicht erschienen, versuche SalvageItem erneut.");
+                    GameActions.TryDesynthesizeStack(desynthesisQueue[0]);
                 }
                 break;
 
