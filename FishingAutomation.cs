@@ -1773,7 +1773,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 }
                 else if (now - desynthesisStepStartedAt!.Value > DesynthesisDialogTimeout)
                 {
-                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack.");
+                    // Diagnose (Nutzeranforderung: weiterhin "SalvageDialog nicht erschienen" trotz
+                    // Delay/Occupied-Guard) - loggt den tatsächlichen Zustand in genau diesem Moment,
+                    // statt weiter zu raten, welches Flag/welche Ursache wirklich zutrifft.
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack. " +
+                        $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, Occupied30={Plugin.Condition[ConditionFlag.Occupied30]}, " +
+                        $"Occupied33={Plugin.Condition[ConditionFlag.Occupied33]}, Occupied38={Plugin.Condition[ConditionFlag.Occupied38]}, " +
+                        $"Occupied39={Plugin.Condition[ConditionFlag.Occupied39]}, Casting={Plugin.Condition[ConditionFlag.Casting]}, " +
+                        $"Fishing={Plugin.Condition[ConditionFlag.Fishing]}, Mounted={Plugin.Condition[ConditionFlag.Mounted]}, " +
+                        $"AnySalvageWindowVisible={GameActions.IsAnySalvageWindowVisible()}.");
                     desynthesisQueue.RemoveAt(0);
                     desynthesisStep = DesynthesisStep.SelectingItem;
                 }
