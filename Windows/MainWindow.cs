@@ -486,13 +486,18 @@ public class MainWindow : Window
             // Fische (siehe Schleife unten), ganz vorne (Nutzeranforderung) - nur zwei kleine Icon-
             // Buttons breit.
             ImGui.TableSetupColumn("##Reorder", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() * 2f + 8f);
-            ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
-            ImGui.TableSetupColumn("##FishingStart", ImGuiTableColumnFlags.WidthFixed, 140f);
-            ImGui.TableSetupColumn("##Active", ImGuiTableColumnFlags.WidthFixed, 140f);
-            ImGui.TableSetupColumn("##Rarity", ImGuiTableColumnFlags.WidthFixed, 80f);
+            // WidthStretch statt WidthFixed (Nutzeranforderung: Tabellenspalten sollen bei schmalerem/
+            // breiterem Fenster alle gemeinsam mitschrumpfen/-wachsen, statt dass nur "Fisch" nachgibt,
+            // während die übrigen starr bleiben und irgendwann abgeschnitten werden) - die bisherigen
+            // Fixed-Pixelwerte dienen jetzt als relative Gewichte, behalten also dasselbe Verhältnis
+            // zueinander. Nur reine Icon-Spalten (Reorder/Remove) bleiben WidthFixed.
+            ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 220f);
+            ImGui.TableSetupColumn("##FishingStart", ImGuiTableColumnFlags.WidthStretch, 140f);
+            ImGui.TableSetupColumn("##Active", ImGuiTableColumnFlags.WidthStretch, 140f);
+            ImGui.TableSetupColumn("##Rarity", ImGuiTableColumnFlags.WidthStretch, 80f);
             // Breit genug für ZWEI Köder-Icons+Anzahl nebeneinander (siehe DrawBaitIcons).
-            ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthFixed, 105f);
-            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthFixed, 260f);
+            ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthStretch, 105f);
+            ImGui.TableSetupColumn("##Note", ImGuiTableColumnFlags.WidthStretch, 260f);
             // Ganz hinten (Nutzeranforderung): Fisch wieder deaktivieren/entfernen.
             ImGui.TableSetupColumn("##Remove", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
             DrawTableHeader(new[] { (1, Loc.T("FISCH", "FISH")), (2, Loc.T("PREP TIMER", "PREP TIMER")), (3, Loc.T("AKTIV", "ACTIVE")), (4, Loc.T("RARITÄT", "RARITY")), (5, Loc.T("KÖDER", "BAIT")), (6, Loc.T("AUTOHOOK-PRESET", "AUTOHOOK PRESET")) }, lastColumn: 7);
@@ -1092,15 +1097,17 @@ public class MainWindow : Window
             return;
 
         ImGui.TableSetupColumn("##Enabled", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight());
-        ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 1f);
+        // WidthStretch statt WidthFixed (Nutzeranforderung: siehe Kommentar bei ##PlannedFish oben) -
+        // die bisherigen Fixed-Pixelwerte dienen jetzt als relative Gewichte.
+        ImGui.TableSetupColumn("##Fish", ImGuiTableColumnFlags.WidthStretch, 220f);
         // Breit genug für ZWEI Köder-Icons+Anzahl nebeneinander (siehe DrawBaitIcons) - mehr als zwei
         // alternative Köder kommen in den Fischdaten aktuell nicht vor.
-        ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthFixed, 105f);
-        ImGui.TableSetupColumn("##NextWindow", ImGuiTableColumnFlags.WidthFixed, 170f);
-        ImGui.TableSetupColumn("##Duration", ImGuiTableColumnFlags.WidthFixed, 80f);
-        ImGui.TableSetupColumn("##Uptime", ImGuiTableColumnFlags.WidthFixed, 80f);
-        ImGui.TableSetupColumn("##PrepTimer", ImGuiTableColumnFlags.WidthFixed, 150f);
-        ImGui.TableSetupColumn("##AutoHookPreset", ImGuiTableColumnFlags.WidthFixed, 210f);
+        ImGui.TableSetupColumn("##Bait", ImGuiTableColumnFlags.WidthStretch, 105f);
+        ImGui.TableSetupColumn("##NextWindow", ImGuiTableColumnFlags.WidthStretch, 170f);
+        ImGui.TableSetupColumn("##Duration", ImGuiTableColumnFlags.WidthStretch, 80f);
+        ImGui.TableSetupColumn("##Uptime", ImGuiTableColumnFlags.WidthStretch, 80f);
+        ImGui.TableSetupColumn("##PrepTimer", ImGuiTableColumnFlags.WidthStretch, 150f);
+        ImGui.TableSetupColumn("##AutoHookPreset", ImGuiTableColumnFlags.WidthStretch, 210f);
         if (isDev)
         {
             ImGui.TableSetupColumn("##FlyToFish", ImGuiTableColumnFlags.WidthFixed, ImGui.GetFrameHeight() + 6f + ImGui.GetStyle().CellPadding.X * 2f);
