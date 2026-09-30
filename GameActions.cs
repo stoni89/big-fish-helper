@@ -400,12 +400,23 @@ public static class GameActions
                     continue;
 
                 var itemId = slot->GetItemId();
-                if (!fishItemIds.Contains(itemId))
+
+                // NICHT auf fishItemIds.Contains vorgefiltert (Nutzer-Report: Goldgrouper #43775
+                // bleibt trotz Kategorie "Seafood"/Desynth>0 unerklärlich unentdeckt) - stattdessen
+                // JEDES Item mit ItemUICategory "Seafood"/"Fish" geloggt, inkl. ob es tatsächlich in
+                // AllFishItemIds enthalten ist, um den Widerspruch direkt sichtbar zu machen.
+                if (!itemSheet.TryGetRow(itemId, out var item))
+                    continue;
+
+                var categoryName = item.ItemUICategory.ValueNullable?.Name.ToString() ?? "?";
+                var isFishCategory = categoryName is "Fish" or "Seafood";
+                var isKnownFish = fishItemIds.Contains(itemId);
+                if (!isFishCategory && !isKnownFish)
                     continue;
 
                 found++;
-                var name = itemSheet.TryGetRow(itemId, out var item) ? item.Name.ToString() : "?";
-                Plugin.Log.Info($"[GameActions] Desynthesis-Debug:   #{itemId} '{name}' x{slot->GetQuantity()} ({bag}, Slot {i}).");
+                Plugin.Log.Info($"[GameActions] Desynthesis-Debug:   #{itemId} '{item.Name}' x{slot->GetQuantity()} ({bag}, Slot {i}) - " +
+                                 $"Kategorie='{categoryName}', Desynth={item.Desynth}, InAllFishItemIds={isKnownFish}.");
             }
         }
 
