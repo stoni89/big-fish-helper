@@ -1683,6 +1683,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 fishItemIds = fishItemIds.Where(id => !bigFishItemIds.Contains(id)).ToHashSet();
             }
 
+            // Sicherheitshalber jedes alte natives Fenster schließen, BEVOR der erste SalvageItem-
+            // Aufruf dieses Laufs passiert - ein von einem vorherigen (z.B. abgebrochenen Test-)Lauf
+            // noch hängendes Fenster/AgentSalvage-Zustand könnte sonst den ersten Aufruf blockieren.
+            GameActions.CloseDesynthesizeWindow();
+
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
             desynthesisStep = DesynthesisStep.SelectingItem;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");

@@ -456,6 +456,18 @@ public static class GameActions
                 if (agent == null)
                     return false;
 
+                // Diagnose für den Fall, dass SalvageItem trotz identischer Item-Daten (per Lumina
+                // geprüft: Desynth/Collectable/Untradable usw. sind für "funktionierende" und
+                // "hängende" Fische exakt gleich) kein Fenster öffnet (Nutzer-Report) - IsSalvage-
+                // ResultAddonOpen bleibt evtl. von einem vorherigen, abgebrochenen Versuch dieser
+                // Testsitzung auf true hängen und blockiert dadurch einen neuen Aufruf. Best-effort
+                // vorab zurückgesetzt, falls das zutrifft.
+                if (agent->IsSalvageResultAddonOpen)
+                {
+                    Plugin.Log.Warning("[GameActions] AgentSalvage.IsSalvageResultAddonOpen war noch true vor einem neuen SalvageItem-Aufruf - zurückgesetzt.");
+                    agent->IsSalvageResultAddonOpen = false;
+                }
+
                 agent->SalvageItem(slot, (int)slot->GetQuantity(), 0);
                 Plugin.Log.Info($"[GameActions] Desynthetisiere Item #{itemId} (Menge {slot->GetQuantity()}).");
                 return true;
