@@ -428,12 +428,16 @@ public static class ModernUi
         var trackColor = value ? (hovered ? AccentHover : Accent) : (hovered ? ToggleOffHover : ToggleOff);
         var radius = height * 0.5f;
 
+        // GetColorU32() statt ColorConvertFloat4ToU32() - rechnet den von ImGui.BeginDisabled()
+        // gesetzten Alpha-Dimm-Faktor (style.Alpha) mit ein, sonst bleibt der Schalter bei
+        // ausgegrauten Zeilen (z.B. "Ignore Big Fish", solange "Desynthesis nach dem Angeln" aus
+        // ist) trotzdem voll sichtbar, während Label und Combo/Slider-Widgets sich korrekt abdunkeln.
         var drawList = ImGui.GetWindowDrawList();
-        drawList.AddRectFilled(pos, pos + new Vector2(width, height), ImGui.ColorConvertFloat4ToU32(trackColor), radius);
+        drawList.AddRectFilled(pos, pos + new Vector2(width, height), ImGui.GetColorU32(trackColor), radius);
 
         var knobRadius = radius - 2.5f;
         var knobX = value ? pos.X + width - radius : pos.X + radius;
-        drawList.AddCircleFilled(new Vector2(knobX, pos.Y + radius), knobRadius, ImGui.ColorConvertFloat4ToU32(Vector4.One), 32);
+        drawList.AddCircleFilled(new Vector2(knobX, pos.Y + radius), knobRadius, ImGui.GetColorU32(Vector4.One), 32);
 
         return changed;
     }
