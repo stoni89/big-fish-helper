@@ -416,14 +416,25 @@ public static class GameActions
     public static unsafe bool TryEnableBulkDesynthesize()
     {
         var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
-        if (addon == null || !addon->IsVisible)
+        // IsReady zusätzlich zu IsVisible (Nutzer-Report: NullReferenceException in ECommons, weil der
+        // Knoten-Baum direkt nach dem Erscheinen noch nicht vollständig aufgebaut war) - sicherheitshalber
+        // trotzdem in try/catch, da ECommons selbst keine Null-Prüfung für seine Knoten-Zugriffe macht.
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
-        var dialog = new AddonMaster.SalvageDialog((nint)addon);
-        if (!dialog.BulkDesynthEnabled)
-            dialog.BulkDesynthEnabled = true;
+        try
+        {
+            var dialog = new AddonMaster.SalvageDialog((nint)addon);
+            if (!dialog.BulkDesynthEnabled)
+                dialog.BulkDesynthEnabled = true;
 
-        return true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryEnableBulkDesynthesize fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
     }
 
     /// <summary>
@@ -436,23 +447,46 @@ public static class GameActions
     public static unsafe bool TryConfirmDesynthesize()
     {
         var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
-        new AddonMaster.SalvageDialog((nint)addon).Desynthesize();
-        Plugin.Log.Info("[GameActions] Desynthesis bestätigt (SalvageDialog.Desynthesize).");
-        return true;
+        try
+        {
+            new AddonMaster.SalvageDialog((nint)addon).Desynthesize();
+            Plugin.Log.Info("[GameActions] Desynthesis bestätigt (SalvageDialog.Desynthesize).");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryConfirmDesynthesize fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
     }
 
-    /// <summary>Schließt das Ergebnis-Fenster ("SalvageResult"), das nach einer bestätigten Desynthesis erscheint.</summary>
+    /// <summary>
+    /// Schließt das Ergebnis-Fenster ("SalvageResult"), das nach einer bestätigten Desynthesis
+    /// erscheint. IsReady zusätzlich zu IsVisible, dazu try/catch um den eigentlichen ECommons-Aufruf
+    /// (Nutzer-Report: NullReferenceException in AddonMaster.SalvageResult.Close(), weil der Knoten-
+    /// Baum direkt nach dem Erscheinen noch nicht vollständig aufgebaut war - ein einzelner
+    /// fehlgeschlagener Frame darf die ganze Automation nicht abbrechen, siehe DesynthesisResultTimeout
+    /// als Rückfallebene im Aufrufer).
+    /// </summary>
     public static unsafe bool TryCloseSalvageResult()
     {
         var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageResult").Address;
-        if (addon == null || !addon->IsVisible)
+        if (addon == null || !addon->IsVisible || !addon->IsReady)
             return false;
 
-        new AddonMaster.SalvageResult((nint)addon).Close();
-        return true;
+        try
+        {
+            new AddonMaster.SalvageResult((nint)addon).Close();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "[GameActions] TryCloseSalvageResult fehlgeschlagen - versuche es nächsten Frame erneut.");
+            return false;
+        }
     }
 
     // Native Desynthesis-Fenster (per FFXIVClientStructs-Struct-Namen verifiziert: AddonSalvageDialog/
