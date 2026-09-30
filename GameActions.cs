@@ -481,6 +481,17 @@ public static class GameActions
                     agent->IsSalvageResultAddonOpen = false;
                 }
 
+                // Nutzer-Report: SalvageItem öffnet kein Fenster, obwohl laut Diagnose weder Occupied
+                // noch ein sichtbares Salvage-Fenster vorliegt - AgentSalvage.IsAgentActive() (echte
+                // Aktivierung des zugrunde liegenden Agenten, unabhängig von der Addon-Sichtbarkeit)
+                // ist vermutlich der eigentliche Schalter: SalvageItem scheint nur zu wirken, wenn der
+                // Agent selbst gerade aktiv ist. Vorsorglich aktivieren, bevor SalvageItem aufgerufen wird.
+                if (!agent->IsAgentActive())
+                {
+                    Plugin.Log.Info("[GameActions] AgentSalvage war nicht aktiv - aktiviere vor SalvageItem.");
+                    agent->Show();
+                }
+
                 agent->SalvageItem(slot, (int)slot->GetQuantity(), 0);
                 Plugin.Log.Info($"[GameActions] Desynthetisiere Item #{itemId} (Menge {slot->GetQuantity()}).");
                 return true;
