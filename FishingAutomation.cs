@@ -38,6 +38,17 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         Desynthesizing,
     }
 
+    // Siehe UpdateDesynthesizing - Teilschritte EINES Fisch-Stacks: erst per AgentSalvage.SalvageItem
+    // im SalvageDialog auswählen, dann den Desynthesize-Knopf bestätigen (Nutzer-Report: ohne diesen
+    // zweiten Schritt wurde nur ausgewählt, nie tatsächlich desynthetisiert), dann das Ergebnis-
+    // Fenster wieder schließen.
+    private enum DesynthesisStep
+    {
+        SelectingItem,
+        WaitingForDialog,
+        WaitingForResult,
+    }
+
     private static readonly TimeSpan TeleportRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ZoneTimeout = TimeSpan.FromSeconds(60);
     // vnavmesh kann das Mesh einer neuen Zone laut Nutzer-Report bis zu 3-5 Minuten lang generieren -
@@ -61,11 +72,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
     // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
     private const int DesynthesisMinFreeMinutes = 10;
-    // Wartezeit zwischen zwei AgentSalvage.SalvageItem-Aufrufen (siehe GameActions.
-    // TryDesynthesizeStack) - die eigentliche Desynthese braucht eine kurze Animation, ein zu früher
-    // nächster Aufruf würde ins Leere laufen. Bewusst großzügig geschätzt, nicht live verifiziert -
-    // Kalibrierung nach erstem Test.
-    private static readonly TimeSpan DesynthesisStepInterval = TimeSpan.FromSeconds(4);
+    // Siehe UpdateDesynthesizing/DesynthesisStep - wie lange maximal auf das Erscheinen von
+    // SalvageDialog (nach SalvageItem) bzw. SalvageResult (nach Desynthesize) gewartet wird, bevor der
+    // Stack übersprungen bzw. einfach weitergemacht wird.
+    private static readonly TimeSpan DesynthesisDialogTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan DesynthesisResultTimeout = TimeSpan.FromSeconds(5);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -207,6 +218,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird. Enthält die noch
     // abzuarbeitenden Fisch-Item-IDs (ein Eintrag je gefundenem Stack im Hauptinventar).
     private List<uint>? desynthesisQueue;
+    private DesynthesisStep desynthesisStep;
     private DateTime? desynthesisStepStartedAt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
@@ -1533,8 +1545,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         StatusText = Loc.T($"Angle auf {FishName(target!)} ({remaining})", $"Fishing for {FishName(target!)} ({remaining})");
 
         // AutoHook wirft normalerweise selbst neu aus - ruht die Angel doch einmal länger, die
-        // Start-Aktionen erneut auslösen.
-        if (!Plugin.Condition[ConditionFlag.Fishing] && now - lastActionAt > RestartInterval)
+        // Start-Aktionen erneut auslösen. NUR wenn Auswerfen gerade auch tatsächlich möglich wäre
+        // (GameActions.CanCastFishingRod) - sonst steckt AutoHook meist schon selbst in einem eigenen
+        // Versuch/Cooldown, und unser zusätzlicher /ahstart mischt sich nur ein statt zu helfen
+        // (Nutzer-Report: "sendet während dem Angeln weitere AutoHook Befehle, was er nicht machen
+        // soll" - sichtbar an wiederholten "[AutoHook] You can't cast right now"-Meldungen im Chat).
+        if (!Plugin.Condition[ConditionFlag.Fishing] && now - lastActionAt > RestartInterval && GameActions.CanCastFishingRod())
         {
             lastActionAt = now;
             FaceWater();
@@ -1617,9 +1633,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     /// native Spielfunktion (AgentSalvage.SalvageItem, siehe GameActions.TryDesynthesizeStack) - kein
     /// Fremd-Plugin wie PandorasBox nötig (Nutzeranforderung: "ich würde ungern Pandora Box als
     /// Required Plugin einbauen... kannst du alle Fische im Inventar auslesen und einzeln desynthesis
-    /// nutzen"). Zwischen zwei Desynthetisierungen eine feste Wartezeit (siehe
-    /// DesynthesisStepInterval), da die eigentliche Desynthese eine kurze Animation braucht - danach
-    /// wird das native Fenster geschlossen (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
+    /// nutzen"). SalvageItem WÄHLT das Item im "SalvageDialog"-Fenster nur an - erst
+    /// GameActions.TryConfirmDesynthesize (der echte "Desynthesize"-Knopf) löst die Desynthese
+    /// tatsächlich aus (Nutzer-Report: ohne diesen zweiten Schritt wurde nur ausgewählt, das Fenster
+    /// nach ein paar Sekunden wieder geschlossen, ohne je wirklich zu desynthetisieren). Über
+    /// DesynthesisStep wird dabei, statt fester Wartezeiten, jeweils auf das tatsächliche
+    /// Erscheinen/Verschwinden der Addons gewartet - danach wird das Ergebnis-Fenster geschlossen
+    /// (Nutzeranforderung: "danach soll das Fenster geschlossen werden").
     /// </summary>
     private void UpdateDesynthesizing(DateTime now)
     {
@@ -1627,26 +1647,56 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         {
             var fishItemIds = BigFishData.All.Select(f => f.ItemId).ToHashSet();
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
+            desynthesisStep = DesynthesisStep.SelectingItem;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
         }
 
-        if (desynthesisStepStartedAt != null && now - desynthesisStepStartedAt.Value < DesynthesisStepInterval)
-            return;
-
-        if (desynthesisQueue.Count == 0)
+        switch (desynthesisStep)
         {
-            GameActions.CloseDesynthesizeWindow();
-            desynthesisQueue = null;
-            desynthesisStepStartedAt = null;
-            SetState(State.Waiting);
-            return;
-        }
+            case DesynthesisStep.SelectingItem:
+                if (desynthesisQueue.Count == 0)
+                {
+                    GameActions.CloseDesynthesizeWindow();
+                    desynthesisQueue = null;
+                    desynthesisStepStartedAt = null;
+                    SetState(State.Waiting);
+                    return;
+                }
 
-        var itemId = desynthesisQueue[0];
-        desynthesisQueue.RemoveAt(0);
-        StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
-        GameActions.TryDesynthesizeStack(itemId);
-        desynthesisStepStartedAt = now;
+                StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
+                if (!GameActions.TryDesynthesizeStack(desynthesisQueue[0]))
+                {
+                    // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
+                    desynthesisQueue.RemoveAt(0);
+                    return;
+                }
+
+                desynthesisStepStartedAt = now;
+                desynthesisStep = DesynthesisStep.WaitingForDialog;
+                break;
+
+            case DesynthesisStep.WaitingForDialog:
+                if (GameActions.TryConfirmDesynthesize())
+                {
+                    desynthesisStepStartedAt = now;
+                    desynthesisStep = DesynthesisStep.WaitingForResult;
+                }
+                else if (now - desynthesisStepStartedAt!.Value > DesynthesisDialogTimeout)
+                {
+                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack.");
+                    desynthesisQueue.RemoveAt(0);
+                    desynthesisStep = DesynthesisStep.SelectingItem;
+                }
+                break;
+
+            case DesynthesisStep.WaitingForResult:
+                if (GameActions.TryCloseSalvageResult() || now - desynthesisStepStartedAt!.Value > DesynthesisResultTimeout)
+                {
+                    desynthesisQueue.RemoveAt(0);
+                    desynthesisStep = DesynthesisStep.SelectingItem;
+                }
+                break;
+        }
     }
 
     // ---- Hilfen ----

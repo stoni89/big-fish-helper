@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using ECommons.UIHelpers.AddonMasterImplementations;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -406,9 +407,39 @@ public static class GameActions
         return false;
     }
 
+    /// <summary>
+    /// Bestätigt die von AgentSalvage.SalvageItem geöffnete Auswahl im "SalvageDialog"-Fenster
+    /// (Nutzer-Report: der Fisch wurde nur ausgewählt, aber nie tatsächlich desynthetisiert - das
+    /// SalvageItem-Fenster wählt das Item nur an, der eigentliche "Desynthesize"-Knopf muss noch
+    /// gedrückt werden). Über ECommons' AddonMaster-Wrapper (klickt den echten Knopf-Callback,
+    /// genau wie ein Nutzer-Klick), statt selbst mit AtkComponentButton/FireCallback zu hantieren.
+    /// </summary>
+    public static unsafe bool TryConfirmDesynthesize()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageDialog").Address;
+        if (addon == null || !addon->IsVisible)
+            return false;
+
+        new AddonMaster.SalvageDialog((nint)addon).Desynthesize();
+        Plugin.Log.Info("[GameActions] Desynthesis bestätigt (SalvageDialog.Desynthesize).");
+        return true;
+    }
+
+    /// <summary>Schließt das Ergebnis-Fenster ("SalvageResult"), das nach einer bestätigten Desynthesis erscheint.</summary>
+    public static unsafe bool TryCloseSalvageResult()
+    {
+        var addon = (AtkUnitBase*)Plugin.GameGui.GetAddonByName("SalvageResult").Address;
+        if (addon == null || !addon->IsVisible)
+            return false;
+
+        new AddonMaster.SalvageResult((nint)addon).Close();
+        return true;
+    }
+
     // Native Desynthesis-Fenster (per FFXIVClientStructs-Struct-Namen verifiziert: AddonSalvageDialog/
-    // AddonSalvageResult/AddonSalvageAutoDialog/AddonSalvageItemSelector) - nicht live geprüft, ob
-    // wirklich alle vier bei "Desynthesis nach dem Angeln" auftauchen können.
+    // AddonSalvageResult/AddonSalvageAutoDialog/AddonSalvageItemSelector) - Sicherheitsnetz zum
+    // Schließen aller vier am Ende, falls eins davon trotz TryConfirmDesynthesize/TryCloseSalvageResult
+    // noch offen hängt (z.B. nach einem Timeout).
     private static readonly string[] SalvageAddonNames = { "SalvageDialog", "SalvageResult", "SalvageAutoDialog", "SalvageItemSelector" };
 
     /// <summary>
