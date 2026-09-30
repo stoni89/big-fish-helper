@@ -86,6 +86,13 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // Kurze Wartezeit NACH dem Anhaken von "Desynthesize entire stack", bevor der Desynthesize-Knopf
     // gedrückt wird - eigener Frame dazwischen, damit das UI die Checkbox sicher übernommen hat.
     private static readonly TimeSpan DesynthesisBulkModeSettleDelay = TimeSpan.FromMilliseconds(300);
+    // Fester Mindestabstand zwischen zwei SalvageItem-Aufrufen (Nutzeranforderung: "100% Fix, gerne
+    // auch mit einem Delay") - unabhängig von GameActions.IsAnySalvageWindowVisible/
+    // IsOccupiedForDesynthesis (beide blieben trotz Nachbesserung unzuverlässig, siehe deren
+    // Kommentare): der Charakter braucht nach dem Schließen des Ergebnis-Fensters offenbar länger,
+    // bis ein neuer Aufruf sicher nicht mehr als "Occupied" abgelehnt wird, als beide Prüfungen
+    // zusammen erkennen konnten.
+    private static readonly TimeSpan DesynthesisInterItemDelay = TimeSpan.FromSeconds(3);
     // Angel-Positionen werden ohne spürbare Abweichung angeflogen: Flug mit kleiner Toleranz, danach
     // zu Fuß exakt drauf (siehe UpdateExactPositioning). Genau 0 meldet vnavmesh nie als "angekommen".
     private const float ArrivalTolerance = 0.1f;
@@ -230,6 +237,9 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private DesynthesisStep desynthesisStep;
     private DateTime? desynthesisStepStartedAt;
     private DateTime? desynthesisLastDialogRetryAt;
+    // Siehe DesynthesisInterItemDelay - ab wann der NÄCHSTE SalvageItem-Aufruf frühestens erlaubt
+    // ist, unabhängig davon, ob Fenster/Occupied-Prüfungen schon "grün" melden.
+    private DateTime desynthesisNextAttemptEarliestAt = DateTime.MinValue;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -409,6 +419,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
         desynthesisQueue = null;
         desynthesisStepStartedAt = null;
+        desynthesisNextAttemptEarliestAt = DateTime.MinValue;
 
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
@@ -1713,12 +1724,17 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
                 StatusText = Loc.T($"Desynthetisiere... (noch {desynthesisQueue.Count})", $"Desynthesizing... ({desynthesisQueue.Count} left)");
 
+                // Fester Mindestabstand seit dem letzten Fisch (siehe DesynthesisInterItemDelay) -
+                // ZUERST geprüft, vor den Fenster-/Occupied-Checks darunter: die blieben trotz
+                // Nachbesserung unzuverlässig (Nutzer-Report: "Unable to execute command while
+                // occupied" trat weiterhin auf), ein fester Delay ist unabhängig davon garantiert.
+                if (now < desynthesisNextAttemptEarliestAt)
+                    return;
+
                 // Direkt nach dem Schließen des vorherigen Ergebnis-Fensters gilt der Charakter kurz
-                // noch als "Occupied" (Nutzer-Report: "Unable to execute command while occupied" im
-                // Chat, trat nach 2 Fischen wieder auf) - erst abwarten, bis KEIN natives Desynthesis-
-                // Fenster mehr offen ist UND keine der gängigen "occupied"-Condition-Flags mehr
-                // gesetzt ist. Beides zusammen mit demselben Timeout als Sicherheitsnetz, falls doch
-                // mal etwas hängen bleibt (sonst würde die Automation hier für immer warten).
+                // noch als "Occupied" - zusätzlich abwarten, bis KEIN natives Desynthesis-Fenster mehr
+                // offen ist UND keine der gängigen "occupied"-Condition-Flags mehr gesetzt ist, mit
+                // demselben Timeout als Sicherheitsnetz, falls doch mal etwas hängen bleibt.
                 if (GameActions.IsAnySalvageWindowVisible() || IsOccupiedForDesynthesis())
                 {
                     desynthesisStepStartedAt ??= now;
@@ -1785,6 +1801,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 if (GameActions.GetInventoryItemCount(desynthesisQueue[0]) == 0)
                     desynthesisQueue.RemoveAt(0);
 
+                desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                 desynthesisStep = DesynthesisStep.SelectingItem;
                 break;
         }
