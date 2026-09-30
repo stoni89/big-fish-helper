@@ -1733,11 +1733,19 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 break;
 
             case DesynthesisStep.WaitingForResult:
-                if (GameActions.TryCloseSalvageResult() || now - desynthesisStepStartedAt!.Value > DesynthesisResultTimeout)
-                {
+                var closed = GameActions.TryCloseSalvageResult();
+                if (!closed && now - desynthesisStepStartedAt!.Value <= DesynthesisResultTimeout)
+                    return;
+
+                // "Desynthesize entire stack" zeigt trotzdem für JEDE EINZELNE Einheit ein eigenes
+                // Vorher/Nachher-Ergebnisfenster (Nutzer-Report/Screenshot: "BEFORE: 1" trotz
+                // größerem Stack, Automation blieb danach stehen) - bleiben noch welche vom selben
+                // Fisch im Hauptinventar übrig, direkt erneut denselben Fisch auswählen statt zum
+                // nächsten Eintrag der Warteschlange weiterzugehen.
+                if (GameActions.GetInventoryItemCount(desynthesisQueue[0]) == 0)
                     desynthesisQueue.RemoveAt(0);
-                    desynthesisStep = DesynthesisStep.SelectingItem;
-                }
+
+                desynthesisStep = DesynthesisStep.SelectingItem;
                 break;
         }
     }
