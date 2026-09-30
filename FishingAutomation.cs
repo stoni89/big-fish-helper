@@ -1582,6 +1582,16 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         StopPath();
         StopLifestreamMove();
         DisableAutoHook();
+
+        // Einholen direkt hier auslösen (Nutzer-Report: nach dem Fang wurde die Angel nicht
+        // eingeholt, Desynthesis konnte dadurch nie starten) - der generische "Angel-Haltung"-Check
+        // in Tick() (siehe dort) greift zwar auch, aber erst einen Frame SPÄTER und deckt bewusst
+        // NICHT State.Waiting ab (das würde sonst auch beim manuellen Angeln außerhalb der
+        // Automation eingreifen). Direkt nach einem selbst ausgelösten Fang wissen wir dagegen
+        // sicher, dass die Automation gerade fischen ließ - unabhängig vom Folgezustand einholen.
+        GameActions.QuitFishing();
+        lastQuitAt = DateTime.UtcNow;
+
         StatusText = message;
         target = null;
         targetPosition = null;
