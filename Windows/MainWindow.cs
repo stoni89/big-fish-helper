@@ -70,6 +70,11 @@ public class MainWindow : Window
     private readonly HashSet<long> logSelectedIds = new();
     private int? logLastClickedRowIndex;
 
+    // Ziehauswahl (Maustaste über mehreren Zeilen gedrückt halten, wie in einem Datei-Explorer) -
+    // logDragAnchorRowIndex ist die Zeile, auf der die Maustaste heruntergedrückt wurde.
+    private bool logDragSelecting;
+    private int? logDragAnchorRowIndex;
+
     private RailPage railPage = RailPage.FishData;
     private bool collapsed;
     private bool collapsedLastFrame;
@@ -2060,74 +2065,6 @@ public class MainWindow : Window
         if (ImGui.Button(Loc.T("Leeren", "Clear") + "##ClearLog"))
             PluginLogStore.Clear();
 
-        ImGui.SameLine();
-        var sourceFilterActive = logExcludedSources.Count > 0;
-        if (sourceFilterActive)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
-        if (ImGui.Button(Loc.T("Quelle...", "Source...") + "##LogSourceFilter"))
-            ImGui.OpenPopup("##LogSourceFilterPopup");
-        if (sourceFilterActive)
-            ImGui.PopStyleColor();
-
-        if (ImGui.BeginPopup("##LogSourceFilterPopup"))
-        {
-            if (ImGui.Button(Loc.T("Alle", "All") + "##LogSourceAll"))
-                logExcludedSources.Clear();
-            ImGui.SameLine();
-            if (ImGui.Button(Loc.T("Keine", "None") + "##LogSourceNone"))
-            {
-                logExcludedSources.Clear();
-                foreach (var source in allSources)
-                    logExcludedSources.Add(source);
-            }
-            ImGui.Separator();
-            foreach (var source in allSources)
-            {
-                var shown = !logExcludedSources.Contains(source);
-                if (ImGui.Checkbox(source + "##LogSourceCheck_" + source, ref shown))
-                {
-                    if (shown)
-                        logExcludedSources.Remove(source);
-                    else
-                        logExcludedSources.Add(source);
-                }
-            }
-            ImGui.EndPopup();
-        }
-
-        ImGui.SameLine();
-        if (logCopyModeEnabled)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
-        if (ImGui.Button(Loc.T("Kopiermodus", "Copy mode") + "##LogCopyMode"))
-        {
-            logCopyModeEnabled = !logCopyModeEnabled;
-            if (!logCopyModeEnabled)
-            {
-                logSelectedIds.Clear();
-                logLastClickedRowIndex = null;
-            }
-        }
-        if (logCopyModeEnabled)
-            ImGui.PopStyleColor();
-
-        ImGui.SameLine();
-        if (ImGui.Button(Loc.T("Alles kopieren", "Copy all") + "##LogCopyAll"))
-            CopyLogLines(entries);
-
-        if (logCopyModeEnabled && logSelectedIds.Count > 0)
-        {
-            ImGui.SameLine();
-            if (ImGui.Button(Loc.T($"Auswahl kopieren ({logSelectedIds.Count})", $"Copy selection ({logSelectedIds.Count})") + "##LogCopySelection"))
-                CopyLogLines(entries.Where(e => logSelectedIds.Contains(e.Id)));
-
-            ImGui.SameLine();
-            if (ImGui.Button(Loc.T("Auswahl aufheben", "Clear selection") + "##LogClearSelection"))
-            {
-                logSelectedIds.Clear();
-                logLastClickedRowIndex = null;
-            }
-        }
-
         ImGui.Spacing();
 
         DrawLogLevelToggle(Loc.T("Verbose", "Verbose"), LogEventLevel.Verbose, ModernUi.TextMuted);
@@ -2150,7 +2087,13 @@ public class MainWindow : Window
             filtered = filtered.Where(e => e.Message.Contains(logSearchText, StringComparison.OrdinalIgnoreCase));
         var filteredList = filtered.ToList();
 
+        // Zeilenzahl links, Quellen-Filter/Kopiermodus/Kopieren-Knöpfe rechtsbündig ganz oben über der
+        // Tabelle (Nutzeranforderung: "nicht in den Kasten rein sondern ganz rechts oberhalb der Tabelle").
+        // avail wird VOR der Zeilenzahl erfasst, da sich ImGui.SameLine(offset) immer auf den
+        // Zeilenanfang bezieht, nicht auf die aktuelle Cursor-Position.
+        var logToolbarLineAvail = ImGui.GetContentRegionAvail().X;
         ImGui.TextColored(ModernUi.TextMuted, Loc.T($"{filteredList.Count} von {entries.Count} Zeilen", $"{filteredList.Count} of {entries.Count} lines"));
+        DrawLogToolbar(entries, allSources, logToolbarLineAvail);
 
         // Keine vertikalen Trennlinien (nur die horizontale Linie unter der Kopfzeile, siehe
         // DrawTableHeader) - identisch zur Play-Tabelle (##PlannedFish), die ebenfalls bewusst ohne
@@ -2197,13 +2140,26 @@ public class MainWindow : Window
                 ImGui.TableNextColumn();
 
                 // Kopiermodus: Zeile per unsichtbarem Selectable (spannt alle Spalten) anklickbar machen -
-                // identische Markier-Logik zu xllogs Kopiermodus (Klick = nur diese Zeile, Shift = Bereich
-                // ab letztem Klick, Strg = einzelne Zeile an/abwählen ohne die übrige Auswahl zu verlieren).
+                // entweder einzeln anklicken (inkl. Shift = Bereich ab letztem Klick, Strg = einzelne
+                // Zeile an/abwählen ohne die übrige Auswahl zu verlieren) ODER Maustaste gedrückt halten
+                // und über mehrere Zeilen hovern (Ziehauswahl wie in einem Datei-Explorer).
                 if (logCopyModeEnabled)
                 {
                     var isSelected = logSelectedIds.Contains(entry.Id);
-                    if (ImGui.Selectable($"##LogRow_{entry.Id}", isSelected, ImGuiSelectableFlags.SpanAllColumns))
+                    ImGui.Selectable($"##LogRow_{entry.Id}", isSelected, ImGuiSelectableFlags.SpanAllColumns);
+                    var rowHovered = ImGui.IsItemHovered();
+
+                    if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
+                    {
+                        logDragSelecting = true;
+                        logDragAnchorRowIndex = rowIndex;
                         HandleLogRowClick(rowIndex, entry.Id, filteredList);
+                    }
+                    else if (logDragSelecting && rowHovered && ImGui.IsMouseDown(ImGuiMouseButton.Left) && logDragAnchorRowIndex.HasValue)
+                    {
+                        ApplyLogDragSelection(logDragAnchorRowIndex.Value, rowIndex, filteredList);
+                    }
+
                     ImGui.SameLine();
                 }
 
@@ -2228,6 +2184,10 @@ public class MainWindow : Window
 
                 ImGui.PopStyleColor();
             }
+
+            // Ziehauswahl endet, sobald die Maustaste wieder losgelassen wird.
+            if (logDragSelecting && !ImGui.IsMouseDown(ImGuiMouseButton.Left))
+                logDragSelecting = false;
 
             // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
             // manuelles Hochscrollen zum Lesen älterer Zeilen bei jeder neuen Zeile sofort wieder
@@ -2268,6 +2228,121 @@ public class MainWindow : Window
         }
 
         logLastClickedRowIndex = rowIndex;
+    }
+
+    /// <summary>
+    /// Ziehauswahl (siehe DrawLogPage) - ersetzt die Auswahl jeden Frame durch den Bereich zwischen der
+    /// Zeile, auf der die Maustaste heruntergedrückt wurde, und der aktuell gehoverten Zeile. Mit Strg
+    /// gedrückt wird der Bereich zur bestehenden Auswahl hinzugefügt statt sie zu ersetzen.
+    /// </summary>
+    private void ApplyLogDragSelection(int anchorRowIndex, int currentRowIndex, List<LogEntry> filteredList)
+    {
+        if (!ImGui.GetIO().KeyCtrl)
+            logSelectedIds.Clear();
+
+        var start = Math.Min(anchorRowIndex, currentRowIndex);
+        var end = Math.Max(anchorRowIndex, currentRowIndex);
+        for (var i = start; i <= end; i++)
+            logSelectedIds.Add(filteredList[i].Id);
+    }
+
+    /// <summary>
+    /// Quellen-Filter, Kopiermodus und Kopieren-Knöpfe - rechtsbündig oberhalb der Log-Tabelle
+    /// (Nutzeranforderung: "ganz rechts oberhalb der Tabelle" statt im Kasten mit Suche/Stufen).
+    /// lineAvail ist die verfügbare Breite ab Zeilenanfang (vor der links stehenden Zeilenzahl erfasst),
+    /// da sich ImGui.SameLine(offset) immer auf den Zeilenanfang bezieht.
+    /// </summary>
+    private void DrawLogToolbar(List<LogEntry> entries, List<string> allSources, float lineAvail)
+    {
+        var sourceLabel = Loc.T("Quelle...", "Source...");
+        var copyModeLabel = Loc.T("Kopiermodus", "Copy mode");
+        var copyAllLabel = Loc.T("Alles kopieren", "Copy all");
+        var showSelectionButtons = logCopyModeEnabled && logSelectedIds.Count > 0;
+        var copySelectionLabel = showSelectionButtons
+            ? Loc.T($"Auswahl kopieren ({logSelectedIds.Count})", $"Copy selection ({logSelectedIds.Count})")
+            : null;
+        var clearSelectionLabel = showSelectionButtons ? Loc.T("Auswahl aufheben", "Clear selection") : null;
+
+        var labels = new List<string> { sourceLabel, copyModeLabel, copyAllLabel };
+        if (copySelectionLabel != null)
+            labels.Add(copySelectionLabel);
+        if (clearSelectionLabel != null)
+            labels.Add(clearSelectionLabel);
+
+        var style = ImGui.GetStyle();
+        var totalWidth = labels.Sum(l => ImGui.CalcTextSize(l).X + style.FramePadding.X * 2f)
+            + style.ItemSpacing.X * (labels.Count - 1);
+
+        ImGui.SameLine(MathF.Max(0f, lineAvail - totalWidth));
+
+        var sourceFilterActive = logExcludedSources.Count > 0;
+        if (sourceFilterActive)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(sourceLabel + "##LogSourceFilter"))
+            ImGui.OpenPopup("##LogSourceFilterPopup");
+        if (sourceFilterActive)
+            ImGui.PopStyleColor();
+
+        if (ImGui.BeginPopup("##LogSourceFilterPopup"))
+        {
+            if (ImGui.Button(Loc.T("Alle", "All") + "##LogSourceAll"))
+                logExcludedSources.Clear();
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T("Keine", "None") + "##LogSourceNone"))
+            {
+                logExcludedSources.Clear();
+                foreach (var source in allSources)
+                    logExcludedSources.Add(source);
+            }
+            ImGui.Separator();
+            foreach (var source in allSources)
+            {
+                var shown = !logExcludedSources.Contains(source);
+                if (ImGui.Checkbox(source + "##LogSourceCheck_" + source, ref shown))
+                {
+                    if (shown)
+                        logExcludedSources.Remove(source);
+                    else
+                        logExcludedSources.Add(source);
+                }
+            }
+            ImGui.EndPopup();
+        }
+
+        ImGui.SameLine();
+        if (logCopyModeEnabled)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(copyModeLabel + "##LogCopyMode"))
+        {
+            logCopyModeEnabled = !logCopyModeEnabled;
+            if (!logCopyModeEnabled)
+            {
+                logSelectedIds.Clear();
+                logLastClickedRowIndex = null;
+                logDragSelecting = false;
+                logDragAnchorRowIndex = null;
+            }
+        }
+        if (logCopyModeEnabled)
+            ImGui.PopStyleColor();
+
+        ImGui.SameLine();
+        if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
+            CopyLogLines(entries);
+
+        if (copySelectionLabel != null && clearSelectionLabel != null)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button(copySelectionLabel + "##LogCopySelection"))
+                CopyLogLines(entries.Where(e => logSelectedIds.Contains(e.Id)));
+
+            ImGui.SameLine();
+            if (ImGui.Button(clearSelectionLabel + "##LogClearSelection"))
+            {
+                logSelectedIds.Clear();
+                logLastClickedRowIndex = null;
+            }
+        }
     }
 
     private void CopyLogLines(IEnumerable<LogEntry> lines)
