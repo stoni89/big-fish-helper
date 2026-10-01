@@ -371,9 +371,13 @@ public static class ModernUi
     /// EndLabelRow übergeben, sonst bestimmt das Widget selbst (mitsamt ImGuis eigener, je nach
     /// Widget-Typ leicht unterschiedlicher Abstands-Verbuchung) die Zeilenhöhe, was neben
     /// ToggleRow (das den Cursor explizit auf eine feste Höhe setzt) sichtbar uneinheitlich aussah
-    /// (Nutzer-Report/Screenshot).
+    /// (Nutzer-Report/Screenshot). contentOffsetY verschiebt NUR Label+Widget (nicht rowStart selbst,
+    /// das weiterhin die ursprüngliche Zeilenposition für EndLabelRow liefert) - für Fälle, in denen
+    /// EndLabelRow mit einer reduzierten Höhe aufgerufen wird (siehe dort) und Inhalt/Widget dadurch
+    /// nicht mehr mittig in der (jetzt kürzeren) Zeile sitzen, z.B. einen kleinen negativen Wert,
+    /// um den Inhalt wieder ein paar Pixel nach oben zu rücken (Nutzeranforderung).
     /// </summary>
-    public static Vector2 LabelRow(string label, float controlWidth, string? helpText = null)
+    public static Vector2 LabelRow(string label, float controlWidth, string? helpText = null, float contentOffsetY = 0f)
     {
         // Von Hand positioniert statt AlignTextToFramePadding()+SameLine() (Nutzer-Report/Screenshot:
         // "Fisher preset"-Beschriftung sitzt spürbar über der Mitte der Combobox, obwohl
@@ -392,13 +396,13 @@ public static class ModernUi
         // korrekt zentriert) - siehe ToggleRow-Kommentar: TextUnformitted addiert beim Zeichnen
         // intern noch einen "Zeilen-Basislinien-Offset", der von der GroupLabel-Überschrift direkt
         // davor nachhängen kann. AddText umgeht das komplett.
-        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f);
+        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f + contentOffsetY);
         ImGui.GetWindowDrawList().AddText(labelPos, ImGui.GetColorU32(ImGuiCol.Text), label);
         var labelMax = labelPos + ImGui.CalcTextSize(label);
         var labelMinY = labelPos.Y;
 
         var widgetX = totalAvail > controlWidth ? rowStart.X + totalAvail - controlWidth : rowStart.X;
-        ImGui.SetCursorPos(new Vector2(widgetX, rowStart.Y));
+        ImGui.SetCursorPos(new Vector2(widgetX, rowStart.Y + contentOffsetY));
         ImGui.SetNextItemWidth(controlWidth);
 
         if (!string.IsNullOrEmpty(helpText))
