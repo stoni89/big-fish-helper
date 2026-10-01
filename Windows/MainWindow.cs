@@ -2378,14 +2378,16 @@ public class MainWindow : Window
         if (count == 0)
             return;
 
+        var text = count == 1
+            ? Loc.T("1 Zeile wurde kopiert", "1 line was copied")
+            : Loc.T($"{count} Zeilen wurden kopiert", $"{count} lines were copied");
+
         Plugin.NotificationManager.AddNotification(new Notification
         {
             Title = Loc.T("Log", "Log"),
-            Content = count == 1
-                ? Loc.T("1 Zeile wurde markiert", "1 line was marked")
-                : Loc.T($"{count} Zeilen wurden markiert", $"{count} lines were marked"),
+            Content = text,
             Type = NotificationType.Info,
-            MinimizedText = count.ToString(CultureInfo.InvariantCulture),
+            MinimizedText = text,
         });
     }
 
@@ -2441,14 +2443,16 @@ public class MainWindow : Window
 
             // Grüner Erfolgs-Toast (Nutzeranforderung: "in grün, damit man sieht es war erfolgreich"),
             // eigenständig von der blauen Info-Benachrichtigung der Zeilenmarkierung im Kopiermodus.
+            var copyAllText = entries.Count == 1
+                ? Loc.T("1 Zeile wurde kopiert", "1 line was copied")
+                : Loc.T($"{entries.Count} Zeilen wurden kopiert", $"{entries.Count} lines were copied");
+
             Plugin.NotificationManager.AddNotification(new Notification
             {
                 Title = Loc.T("Log", "Log"),
-                Content = entries.Count == 1
-                    ? Loc.T("1 Zeile wurde kopiert", "1 line was copied")
-                    : Loc.T($"{entries.Count} Zeilen wurden kopiert", $"{entries.Count} lines were copied"),
+                Content = copyAllText,
                 Type = NotificationType.Success,
-                MinimizedText = entries.Count.ToString(CultureInfo.InvariantCulture),
+                MinimizedText = copyAllText,
             });
         }
 
