@@ -238,6 +238,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // ist, unabhängig davon, ob Fenster/Occupied-Prüfungen schon "grün" melden.
     private DateTime desynthesisNextAttemptEarliestAt = DateTime.MinValue;
     private uint desynthesisQuantityBeforeAttempt;
+    // Siehe WaitingForDialog-Timeout - manchmal öffnet SalvageItem einfach kein Fenster (Nutzer-
+    // Report: ein Stack blieb hängen, obwohl weder Occupied noch ein Fenster offen war - vermutlich
+    // ein flüchtiger Hänger bei AgentSalvage selbst). Statt den Stack sofort nach dem ERSTEN
+    // Fehlschlag aufzugeben, erst ein paar Mal neu versuchen.
+    private const int MaxDesynthesisDialogAttempts = 3;
+    private int desynthesisDialogAttempt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -317,10 +323,28 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     /// aber mehrfach fangbaren Fisch nie erneut von false auf true wechseln. Die Fang-Nachricht
     /// enthält einen anklickbaren Item-Link (ItemPayload) für den gefangenen Fisch - darüber wird
     /// sprachunabhängig per Item-Id abgeglichen, nicht über den (lokalisierten) Text.
+    ///
+    /// Zusätzlich GatheringSystemMessage (Nutzer-Report: "Triple Threat" - ein besonders großer/
+    /// seltener Fisch - wurde gefangen, aber kein Quit ausgelöst): besonders bemerkenswerte Fänge
+    /// (Rekord-/Achievement-Ankündigung) kommen offenbar unter diesem Chat-Typ statt dem normalen
+    /// Gathering, bisher aber nur mit diesem einen Fisch beobachtet - falls auch das nicht reicht,
+    /// hilft der Log-Eintrag unten (unabhängig vom ChatType) bei der Nachjustierung.
     /// </summary>
     private void OnChatMessage(IHandleableChatMessage message)
     {
-        if (message.LogKind != XivChatType.Gathering)
+        if (target != null && state != State.Waiting && !IsTest)
+        {
+            foreach (var diagnosticPayload in message.Message.Payloads)
+            {
+                if (diagnosticPayload is ItemPayload diagnosticItem && diagnosticItem.ItemId == target.ItemId
+                    && message.LogKind != XivChatType.Gathering && message.LogKind != XivChatType.GatheringSystemMessage)
+                {
+                    Plugin.Log.Info($"[FishingAutomation] OnChatMessage: Item-Link für aktuelles Ziel {FishName(target)} in Chat-Zeile mit unerwartetem LogKind={message.LogKind}: \"{message.Message.TextValue}\".");
+                }
+            }
+        }
+
+        if (message.LogKind != XivChatType.Gathering && message.LogKind != XivChatType.GatheringSystemMessage)
             return;
 
         foreach (var payload in message.Message.Payloads)
@@ -418,6 +442,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         desynthesisQueue = null;
         desynthesisStepStartedAt = null;
         desynthesisNextAttemptEarliestAt = DateTime.MinValue;
+        desynthesisDialogAttempt = 0;
 
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
@@ -1711,6 +1736,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
             desynthesisStep = DesynthesisStep.SelectingItem;
+            desynthesisDialogAttempt = 0;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
         }
 
@@ -1761,6 +1787,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 {
                     // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
                     desynthesisQueue.RemoveAt(0);
+                    desynthesisDialogAttempt = 0;
                     return;
                 }
 
@@ -1797,6 +1824,23 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                             $"{desynthesisQuantityBeforeAttempt} -> {currentQuantity} - werte als Erfolg, mache weiter.");
                         if (currentQuantity == 0)
                             desynthesisQueue.RemoveAt(0);
+                        desynthesisDialogAttempt = 0;
+                        desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
+                        desynthesisStep = DesynthesisStep.SelectingItem;
+                        break;
+                    }
+
+                    // Manchmal öffnet SalvageItem einfach kein Fenster, obwohl nichts offensichtlich
+                    // blockiert (Nutzer-Report: ein Stack blieb trotz Occupied=False/kein Fenster
+                    // hängen) - statt direkt aufzugeben, erst ein paar Mal neu versuchen (siehe
+                    // MaxDesynthesisDialogAttempts), bevor der Stack wirklich übersprungen wird.
+                    desynthesisDialogAttempt++;
+                    if (desynthesisDialogAttempt < MaxDesynthesisDialogAttempts)
+                    {
+                        Plugin.Log.Warning($"[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, Versuch {desynthesisDialogAttempt}/{MaxDesynthesisDialogAttempts} - versuche erneut. " +
+                            $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
+                        GameActions.CloseDesynthesizeWindow();
+                        desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                         desynthesisStep = DesynthesisStep.SelectingItem;
                         break;
                     }
@@ -1804,13 +1848,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                     // Diagnose (Nutzeranforderung: weiterhin "SalvageDialog nicht erschienen" trotz
                     // Delay/Occupied-Guard) - loggt den tatsächlichen Zustand in genau diesem Moment,
                     // statt weiter zu raten, welches Flag/welche Ursache wirklich zutrifft.
-                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack. " +
+                    Plugin.Log.Warning($"[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack nach {desynthesisDialogAttempt} Versuchen. " +
                         $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, Occupied30={Plugin.Condition[ConditionFlag.Occupied30]}, " +
                         $"Occupied33={Plugin.Condition[ConditionFlag.Occupied33]}, Occupied38={Plugin.Condition[ConditionFlag.Occupied38]}, " +
                         $"Occupied39={Plugin.Condition[ConditionFlag.Occupied39]}, Casting={Plugin.Condition[ConditionFlag.Casting]}, " +
                         $"Fishing={Plugin.Condition[ConditionFlag.Fishing]}, Mounted={Plugin.Condition[ConditionFlag.Mounted]}, " +
                         $"SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
                     desynthesisQueue.RemoveAt(0);
+                    desynthesisDialogAttempt = 0;
+                    desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                     desynthesisStep = DesynthesisStep.SelectingItem;
                 }
                 break;
@@ -1837,6 +1883,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 if (GameActions.GetInventoryItemCount(desynthesisQueue[0]) == 0)
                     desynthesisQueue.RemoveAt(0);
 
+                desynthesisDialogAttempt = 0;
                 desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                 desynthesisStep = DesynthesisStep.SelectingItem;
                 break;
