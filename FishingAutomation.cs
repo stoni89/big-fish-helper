@@ -238,6 +238,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // ist, unabhängig davon, ob Fenster/Occupied-Prüfungen schon "grün" melden.
     private DateTime desynthesisNextAttemptEarliestAt = DateTime.MinValue;
     private uint desynthesisQuantityBeforeAttempt;
+    // Siehe WaitingForDialog-Timeout - manchmal öffnet SalvageItem einfach kein Fenster (Nutzer-
+    // Report: ein Stack blieb hängen, obwohl weder Occupied noch ein Fenster offen war - vermutlich
+    // ein flüchtiger Hänger bei AgentSalvage selbst). Statt den Stack sofort nach dem ERSTEN
+    // Fehlschlag aufzugeben, erst ein paar Mal neu versuchen.
+    private const int MaxDesynthesisDialogAttempts = 3;
+    private int desynthesisDialogAttempt;
     private DateTime lastSprintAt = DateTime.MinValue;
 
     // Sonderweg für Fische, deren Zone nicht direkt per Ätherit erreichbar ist (siehe SpecialRoutes.cs,
@@ -436,6 +442,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         desynthesisQueue = null;
         desynthesisStepStartedAt = null;
         desynthesisNextAttemptEarliestAt = DateTime.MinValue;
+        desynthesisDialogAttempt = 0;
 
         SetState(State.Waiting);
         StatusText = Loc.T("Gestoppt.", "Stopped.");
@@ -1729,6 +1736,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
             desynthesisQueue = GameActions.FindInventoryItemIds(fishItemIds).Distinct().ToList();
             desynthesisStep = DesynthesisStep.SelectingItem;
+            desynthesisDialogAttempt = 0;
             Plugin.Log.Info($"[FishingAutomation] Desynthesis nach dem Angeln: {desynthesisQueue.Count} Fisch-Stack(s) im Inventar gefunden.");
         }
 
@@ -1779,6 +1787,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 {
                     // Nicht (mehr) im Hauptinventar (z.B. anderweitig entfernt) - einfach überspringen.
                     desynthesisQueue.RemoveAt(0);
+                    desynthesisDialogAttempt = 0;
                     return;
                 }
 
@@ -1815,6 +1824,23 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                             $"{desynthesisQuantityBeforeAttempt} -> {currentQuantity} - werte als Erfolg, mache weiter.");
                         if (currentQuantity == 0)
                             desynthesisQueue.RemoveAt(0);
+                        desynthesisDialogAttempt = 0;
+                        desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
+                        desynthesisStep = DesynthesisStep.SelectingItem;
+                        break;
+                    }
+
+                    // Manchmal öffnet SalvageItem einfach kein Fenster, obwohl nichts offensichtlich
+                    // blockiert (Nutzer-Report: ein Stack blieb trotz Occupied=False/kein Fenster
+                    // hängen) - statt direkt aufzugeben, erst ein paar Mal neu versuchen (siehe
+                    // MaxDesynthesisDialogAttempts), bevor der Stack wirklich übersprungen wird.
+                    desynthesisDialogAttempt++;
+                    if (desynthesisDialogAttempt < MaxDesynthesisDialogAttempts)
+                    {
+                        Plugin.Log.Warning($"[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, Versuch {desynthesisDialogAttempt}/{MaxDesynthesisDialogAttempts} - versuche erneut. " +
+                            $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
+                        GameActions.CloseDesynthesizeWindow();
+                        desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                         desynthesisStep = DesynthesisStep.SelectingItem;
                         break;
                     }
@@ -1822,13 +1848,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                     // Diagnose (Nutzeranforderung: weiterhin "SalvageDialog nicht erschienen" trotz
                     // Delay/Occupied-Guard) - loggt den tatsächlichen Zustand in genau diesem Moment,
                     // statt weiter zu raten, welches Flag/welche Ursache wirklich zutrifft.
-                    Plugin.Log.Warning("[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack. " +
+                    Plugin.Log.Warning($"[FishingAutomation] Desynthesis: SalvageDialog nicht erschienen, überspringe Stack nach {desynthesisDialogAttempt} Versuchen. " +
                         $"Diagnose: Occupied={Plugin.Condition[ConditionFlag.Occupied]}, Occupied30={Plugin.Condition[ConditionFlag.Occupied30]}, " +
                         $"Occupied33={Plugin.Condition[ConditionFlag.Occupied33]}, Occupied38={Plugin.Condition[ConditionFlag.Occupied38]}, " +
                         $"Occupied39={Plugin.Condition[ConditionFlag.Occupied39]}, Casting={Plugin.Condition[ConditionFlag.Casting]}, " +
                         $"Fishing={Plugin.Condition[ConditionFlag.Fishing]}, Mounted={Plugin.Condition[ConditionFlag.Mounted]}, " +
                         $"SichtbareFenster={GameActions.GetVisibleSalvageWindowNames()}.");
                     desynthesisQueue.RemoveAt(0);
+                    desynthesisDialogAttempt = 0;
+                    desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                     desynthesisStep = DesynthesisStep.SelectingItem;
                 }
                 break;
@@ -1855,6 +1883,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
                 if (GameActions.GetInventoryItemCount(desynthesisQueue[0]) == 0)
                     desynthesisQueue.RemoveAt(0);
 
+                desynthesisDialogAttempt = 0;
                 desynthesisNextAttemptEarliestAt = now + DesynthesisInterItemDelay;
                 desynthesisStep = DesynthesisStep.SelectingItem;
                 break;
