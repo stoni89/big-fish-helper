@@ -789,7 +789,7 @@ public class MainWindow : Window
         // Rot markieren, wenn nichts ausgewählt ist ODER das gewählte Preset keine Fischer-Klasse ist
         // (Nutzeranforderung: Start-Knopf auch dann sperren) - derselbe Bedingung wie beim Start-Knopf.
         var invalidGearset = currentGearsetName == null || !GameActions.IsGearsetFisher(config.FisherGearsetIndex);
-        ModernUi.LabelRow(Loc.T("Fischer Preset", "Fisher preset"), 280f,
+        var gearsetRowStart = ModernUi.LabelRow(Loc.T("Fischer Preset", "Fisher preset"), 280f,
             Loc.T(
                 "Ausrüstungsset, auf das die Automation als Erstes wechselt, noch vor jedem Teleport - ohne eine Fischer-Klasse hier lässt sich \"Start\" nicht klicken.",
                 "Gear set the automation switches to first, before any teleport - without a Fisher class here, \"Start\" can't be clicked."));
@@ -825,11 +825,13 @@ public class MainWindow : Window
             ImGui.PopStyleColor();
         }
 
+        ModernUi.EndLabelRow(gearsetRowStart);
+
         // "Always Up Fish Backup Timer" (Nutzeranforderung) - siehe FishingAutomation.UpdateWaiting.
         // Gleiche Karte wie das Fischer-Preset darüber (Nutzeranforderung: "Fish" und "Fishing"
         // zusammenfassen, "Fishing" behalten).
         ModernUi.CardDivider();
-        ModernUi.LabelRow(Loc.T("Always Up Fish Backup Timer", "Always Up Fish Backup Timer"), 220f,
+        var backupTimerRowStart = ModernUi.LabelRow(Loc.T("Always Up Fish Backup Timer", "Always Up Fish Backup Timer"), 220f,
             Loc.T(
                 "Startet Always Up Fische nur, wenn in den nächsten X Minuten kein Prep Timer von nicht Always Up Fischen beginnt.",
                 "Only starts Always Up fish if no prep timer of a non-Always Up fish begins within the next X minutes."));
@@ -840,6 +842,7 @@ public class MainWindow : Window
             config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
         if (ImGui.IsItemDeactivatedAfterEdit())
             config.Save();
+        ModernUi.EndLabelRow(backupTimerRowStart);
 
         // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
         // ShouldDesynthesizeNow/UpdateDesynthesizing. Rein nativ über AgentSalvage.SalvageItem, kein
@@ -880,7 +883,7 @@ public class MainWindow : Window
         // Mount (Standard: Mount Roulette), mit Suchfeld.
         var rouletteLabel = Loc.T("Mount Roulette", "Mount Roulette");
         var currentLabel = config.FlyingMountId == 0 ? rouletteLabel : GameActions.MountName(config.FlyingMountId);
-        ModernUi.LabelRow(Loc.T("Mount zum Fliegen", "Mount for flying"), 280f,
+        var flyingMountRowStart = ModernUi.LabelRow(Loc.T("Mount zum Fliegen", "Mount for flying"), 280f,
             Loc.T("Mit diesem Mount fliegt die Automation zur Angel-Position.", "The automation flies to the fishing position with this mount."));
         if (ImGui.BeginCombo("##FlyingMount", currentLabel))
         {
@@ -910,6 +913,8 @@ public class MainWindow : Window
 
             ImGui.EndCombo();
         }
+
+        ModernUi.EndLabelRow(flyingMountRowStart);
 
         ModernUi.CardDivider();
         var useSprintInCities = config.UseSprintInCities;

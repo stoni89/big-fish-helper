@@ -361,8 +361,13 @@ public static class ModernUi
     /// Widget auf - direkt danach z.B. ImGui.SliderFloat mit SetNextItemWidth(controlWidth) davor.
     /// helpText siehe HelpIconIfHovered-Kommentar - die Zeilenhöhe wird dabei als einfache
     /// Framehöhe angenommen (für mehrzeilige Controls direkt HelpIconIfHovered selbst aufrufen).
+    /// Gibt die Zeilen-Startposition zurück - direkt nach dem eigentlichen Widget (Combo/Slider) an
+    /// EndLabelRow übergeben, sonst bestimmt das Widget selbst (mitsamt ImGuis eigener, je nach
+    /// Widget-Typ leicht unterschiedlicher Abstands-Verbuchung) die Zeilenhöhe, was neben
+    /// ToggleRow (das den Cursor explizit auf eine feste Höhe setzt) sichtbar uneinheitlich aussah
+    /// (Nutzer-Report/Screenshot).
     /// </summary>
-    public static void LabelRow(string label, float controlWidth, string? helpText = null)
+    public static Vector2 LabelRow(string label, float controlWidth, string? helpText = null)
     {
         // Von Hand positioniert statt AlignTextToFramePadding()+SameLine() (Nutzer-Report/Screenshot:
         // "Fisher preset"-Beschriftung sitzt spürbar über der Mitte der Combobox, obwohl
@@ -392,7 +397,19 @@ public static class ModernUi
 
         if (!string.IsNullOrEmpty(helpText))
             HelpIconIfHovered(rowScreenMin, new Vector2(totalAvail, rowHeight), labelMax, labelMinY, helpText);
+
+        return rowStart;
     }
+
+    /// <summary>
+    /// Direkt NACH dem eigentlichen Widget (Combo/SliderInt) aufzurufen, mit der von LabelRow
+    /// zurückgegebenen Zeilen-Startposition - setzt den Cursor explizit auf dieselbe feste
+    /// Zeilenhöhe, die ToggleRow auch nutzt (GetFrameHeight()), statt dem Widget selbst (und ImGuis
+    /// Spacing-Verbuchung danach) die tatsächliche Zeilenhöhe überlassen - sonst wirkten Combo-/
+    /// Slider-Zeilen minimal höher als Toggle-Zeilen (Nutzer-Report/Screenshot).
+    /// </summary>
+    public static void EndLabelRow(Vector2 rowStart) =>
+        ImGui.SetCursorPos(rowStart + new Vector2(0f, ImGui.GetFrameHeight()));
 
     /// <summary>
     /// Zeichnet ein kleines "?"-Icon direkt hinter labelEndScreenPos (und zeigt helpText als
