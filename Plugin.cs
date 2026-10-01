@@ -13,7 +13,14 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
-    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    // RawLog = das von Dalamud injizierte, echte IPluginLog. Log selbst liefert stattdessen einen
+    // PluginLogRecorder, der jeden Aufruf unverändert an RawLog weiterreicht (identisches Verhalten
+    // in /xllog) UND zusätzlich in PluginLogStore ablegt, damit die eigene Log-Seite im Plugin-Menü
+    // (siehe MainWindow.DrawLogPage) die eigenen Log-Zeilen durchsuchbar/filterbar anzeigen kann -
+    // ALLE bestehenden Plugin.Log.X(...)-Aufrufstellen im Projekt bleiben dadurch unverändert.
+    [PluginService] internal static IPluginLog RawLog { get; private set; } = null!;
+    private static PluginLogRecorder? logRecorder;
+    internal static IPluginLog Log => logRecorder ??= new PluginLogRecorder(RawLog);
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static ICondition Condition { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
@@ -21,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IGameGui GameGui { get; private set; } = null!;
+    [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
     private const string CommandName = "/bigfish";
 
