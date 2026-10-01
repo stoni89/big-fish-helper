@@ -409,13 +409,19 @@ public static class ModernUi
 
     /// <summary>
     /// Direkt NACH dem eigentlichen Widget (Combo/SliderInt) aufzurufen, mit der von LabelRow
-    /// zurückgegebenen Zeilen-Startposition - setzt den Cursor explizit auf dieselbe feste
-    /// Zeilenhöhe, die ToggleRow auch nutzt (GetFrameHeight()), statt dem Widget selbst (und ImGuis
-    /// Spacing-Verbuchung danach) die tatsächliche Zeilenhöhe überlassen - sonst wirkten Combo-/
-    /// Slider-Zeilen minimal höher als Toggle-Zeilen (Nutzer-Report/Screenshot).
+    /// zurückgegebenen Zeilen-Startposition - setzt den Cursor explizit auf eine feste Zeilenhöhe,
+    /// statt dem Widget selbst (und ImGuis Spacing-Verbuchung danach) die tatsächliche Zeilenhöhe zu
+    /// überlassen. measuredHeight optional für Widgets, bei denen GetItemRectSize() direkt danach
+    /// nicht mehr zuverlässig das richtige Element liefert (z.B. ein Combo, in dessen Popup danach
+    /// noch weitere Elemente gezeichnet wurden - siehe Aufrufer) - dort wird die Höhe gleich nach
+    /// BeginCombo() selbst gemessen und hier durchgereicht. Ohne Angabe wird GetItemRectSize() DIESES
+    /// Frames zuletzt gezeichneten Elements genutzt (z.B. direkt nach einem SliderInt sicher).
     /// </summary>
-    public static void EndLabelRow(Vector2 rowStart) =>
-        ImGui.SetCursorPos(rowStart + new Vector2(0f, ImGui.GetFrameHeight()));
+    public static void EndLabelRow(Vector2 rowStart, float? measuredHeight = null)
+    {
+        var height = measuredHeight ?? ImGui.GetItemRectSize().Y;
+        ImGui.SetCursorPos(rowStart + new Vector2(0f, height));
+    }
 
     /// <summary>
     /// Zeichnet ein kleines "?"-Icon direkt hinter labelEndScreenPos (und zeigt helpText als

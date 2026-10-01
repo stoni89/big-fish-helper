@@ -795,7 +795,12 @@ public class MainWindow : Window
                 "Gear set the automation switches to first, before any teleport - without a Fisher class here, \"Start\" can't be clicked."));
         if (invalidGearset)
             ImGui.PushStyleColor(ImGuiCol.Text, NotCaughtColor);
-        if (ImGui.BeginCombo("##FisherGearset", gearsetLabel))
+        var gearsetComboOpen = ImGui.BeginCombo("##FisherGearset", gearsetLabel);
+        // Direkt nach BeginCombo gemessen (siehe EndLabelRow-Kommentar) - Elemente im Popup danach
+        // (Selectable/InputText) würden sonst als "letztes Element" überschreiben, was GetItemRectSize()
+        // weiter unten zurückgäbe.
+        var gearsetComboHeight = ImGui.GetItemRectSize().Y;
+        if (gearsetComboOpen)
         {
             if (invalidGearset)
                 ImGui.PopStyleColor();
@@ -825,7 +830,7 @@ public class MainWindow : Window
             ImGui.PopStyleColor();
         }
 
-        ModernUi.EndLabelRow(gearsetRowStart);
+        ModernUi.EndLabelRow(gearsetRowStart, gearsetComboHeight);
 
         // "Always Up Fish Backup Timer" (Nutzeranforderung) - siehe FishingAutomation.UpdateWaiting.
         // Gleiche Karte wie das Fischer-Preset darüber (Nutzeranforderung: "Fish" und "Fishing"
@@ -885,7 +890,9 @@ public class MainWindow : Window
         var currentLabel = config.FlyingMountId == 0 ? rouletteLabel : GameActions.MountName(config.FlyingMountId);
         var flyingMountRowStart = ModernUi.LabelRow(Loc.T("Mount zum Fliegen", "Mount for flying"), 280f,
             Loc.T("Mit diesem Mount fliegt die Automation zur Angel-Position.", "The automation flies to the fishing position with this mount."));
-        if (ImGui.BeginCombo("##FlyingMount", currentLabel))
+        var flyingMountComboOpen = ImGui.BeginCombo("##FlyingMount", currentLabel);
+        var flyingMountComboHeight = ImGui.GetItemRectSize().Y;
+        if (flyingMountComboOpen)
         {
             if (ImGui.Selectable(rouletteLabel, config.FlyingMountId == 0))
             {
@@ -914,7 +921,7 @@ public class MainWindow : Window
             ImGui.EndCombo();
         }
 
-        ModernUi.EndLabelRow(flyingMountRowStart);
+        ModernUi.EndLabelRow(flyingMountRowStart, flyingMountComboHeight);
 
         ModernUi.CardDivider();
         var useSprintInCities = config.UseSprintInCities;
