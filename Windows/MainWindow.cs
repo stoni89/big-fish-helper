@@ -933,7 +933,8 @@ public class MainWindow : Window
         if (ModernUi.ToggleRow(Loc.T("Sprint in Städten nutzen", "Use Sprint in cities"), ref useSprintInCities,
                 Loc.T(
                     "Nutzt beim Zu-Fuß-Laufen in Städten (kein Aufsitzen möglich) Sprint, sobald es nicht auf Abklingzeit ist.",
-                    "Uses Sprint while walking on foot in cities (mounting not possible), whenever it's off cooldown.")))
+                    "Uses Sprint while walking on foot in cities (mounting not possible), whenever it's off cooldown."),
+                heightReduction: 7f, contentOffsetY: -8f))
         {
             config.UseSprintInCities = useSprintInCities;
             config.Save();
