@@ -426,7 +426,22 @@ public static class ModernUi
 
     // Von ToggleRow UND ToggleSwitch genutzt, damit beide immer dieselbe Höhe annehmen - größer
     // als die Standard-Framehöhe (1.15x), damit der Schalter sichtbar größer als ein Textfeld wirkt.
-    private const float ToggleHeightScale = 1.05f;
+    // Public statt private, siehe PadRowToToggleHeight.
+    public const float ToggleHeightScale = 1.05f;
+
+    /// <summary>
+    /// Direkt NACH einem normalen ImGui-Widget (Combo/SliderInt) aufzurufen, das über LabelRow
+    /// beschriftet wurde - gleicht die Zeilenhöhe an eine ToggleRow an, die wegen ToggleHeightScale
+    /// bewusst etwas höher ist als ein Standard-Widget. Ohne das war der Abstand zwischen zwei
+    /// CardDivider-Linien je nachdem, ob dazwischen ein Toggle oder eine Combobox/Slider stand,
+    /// unterschiedlich groß (Nutzer-Report/Screenshot).
+    /// </summary>
+    public static void PadRowToToggleHeight()
+    {
+        var extra = ImGui.GetFrameHeight() * (ToggleHeightScale - 1f);
+        if (extra > 0f)
+            ImGui.Dummy(new Vector2(0f, extra));
+    }
 
     /// <summary>
     /// Zeile "Beschriftung ..................... Toggle" - Kombination aus LabelRow und
