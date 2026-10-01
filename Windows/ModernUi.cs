@@ -471,7 +471,9 @@ public static class ModernUi
     /// HelpIconIfHovered-Kommentar - ersetzt den früher permanent darunter stehenden Fließtext:
     /// erscheint nur noch als "?"-Icon neben dem Titel, solange die Zeile gehovert wird.
     /// </summary>
-    public static bool ToggleRow(string label, ref bool value, string? helpText = null)
+    /// <param name="heightReduction">Feinjustierung der Zeilenhöhe (siehe EndLabelRow/LabelRow-Kommentar) - Standard 1px wie überall sonst, einzelne Zeilen können einen anderen Wert übergeben.</param>
+    /// <param name="contentOffsetY">Verschiebt NUR Label+Toggle (nicht den Zeilen-Endpunkt) - z.B. ein negativer Wert, um den Inhalt bei größerem heightReduction wieder zu zentrieren.</param>
+    public static bool ToggleRow(string label, ref bool value, string? helpText = null, float heightReduction = 1f, float contentOffsetY = 0f)
     {
         // Bewusst mit von Hand berechneten Positionen statt AlignTextToFramePadding() (das nimmt
         // die volle Standard-Framehöhe an) - der Toggle weicht davon ab (siehe ToggleHeightScale),
@@ -497,21 +499,19 @@ public static class ModernUi
         // ImGuis normale Zeilenverfolgung umgeht. AddText zeichnet direkt an der übergebenen
         // Bildschirmposition, ganz ohne diesen zusätzlichen Offset - exakt dieselbe Technik wie schon
         // beim "?"-Hilfe-Icon in HelpIconIfHovered.
-        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f);
+        var labelPos = rowScreenMin + new Vector2(0f, (rowHeight - textHeight) * 0.5f + contentOffsetY);
         ImGui.GetWindowDrawList().AddText(labelPos, ImGui.GetColorU32(ImGuiCol.Text), label);
         var labelMax = labelPos + ImGui.CalcTextSize(label);
         var labelMinY = labelPos.Y;
 
         var toggleX = totalAvail > toggleWidth ? rowStart.X + totalAvail - toggleWidth : rowStart.X;
-        ImGui.SetCursorPos(new Vector2(toggleX, rowStart.Y + (rowHeight - toggleHeight) * 0.5f));
+        ImGui.SetCursorPos(new Vector2(toggleX, rowStart.Y + (rowHeight - toggleHeight) * 0.5f + contentOffsetY));
         var changed = ToggleSwitch($"##toggle_{label}", ref value);
 
         if (!string.IsNullOrEmpty(helpText))
             HelpIconIfHovered(rowScreenMin, new Vector2(totalAvail, rowHeight), labelMax, labelMinY, helpText);
 
-        // -1px Feinjustierung (Nutzeranforderung: Zeilenhöhe schrittweise kalibrieren, wie schon bei
-        // der Always-Up-Fish-Backup-Timer-Zeile).
-        ImGui.SetCursorPos(rowStart + new Vector2(0f, rowHeight - 1f));
+        ImGui.SetCursorPos(rowStart + new Vector2(0f, rowHeight - heightReduction));
         return changed;
     }
 

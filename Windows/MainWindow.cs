@@ -860,7 +860,8 @@ public class MainWindow : Window
         if (ModernUi.ToggleRow(Loc.T("Desynthesis nach dem Angeln", "Desynthesis after fishing"), ref desynthesisAfterFishing,
                 Loc.T(
                     "Führe Desynthesis nach dem Angeln aus, wenn in den nächsten 10 Minuten kein Prep Timer beginnt.",
-                    "Perform desynthesis after fishing if no prep timer begins within the next 10 minutes.")))
+                    "Perform desynthesis after fishing if no prep timer begins within the next 10 minutes."),
+                heightReduction: 7f, contentOffsetY: -8f))
         {
             config.DesynthesisAfterFishing = desynthesisAfterFishing;
             config.Save();
@@ -874,7 +875,8 @@ public class MainWindow : Window
         if (ModernUi.ToggleRow(Loc.T("Big Fish ignorieren", "Ignore Big Fish"), ref desynthesisIgnoreBigFish,
                 Loc.T(
                     "Desynthese von allen Fischen mit Ausnahme von Big Fish.",
-                    "Desynthesize all fish except Big Fish.")))
+                    "Desynthesize all fish except Big Fish."),
+                heightReduction: 7f, contentOffsetY: -8f))
         {
             config.DesynthesisIgnoreBigFish = desynthesisIgnoreBigFish;
             config.Save();
