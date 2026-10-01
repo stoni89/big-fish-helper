@@ -999,6 +999,7 @@ public class MainWindow : Window
             var simulationRunning = automation.IsRunning;
             if (simulationRunning)
                 ImGui.BeginDisabled();
+            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 4f);
             if (ImGui.Button(Loc.T("Desynthesis simulieren", "Simulate desynthesis") + "##StartDesynthesisSimulation"))
                 automation.StartDesynthesisSimulation();
             if (simulationRunning)
