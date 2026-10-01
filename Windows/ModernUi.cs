@@ -424,24 +424,13 @@ public static class ModernUi
             ImGui.SetTooltip(helpText);
     }
 
-    // Von ToggleRow UND ToggleSwitch genutzt, damit beide immer dieselbe Höhe annehmen - größer
-    // als die Standard-Framehöhe (1.15x), damit der Schalter sichtbar größer als ein Textfeld wirkt.
-    // Public statt private, siehe PadRowToToggleHeight.
-    public const float ToggleHeightScale = 1.05f;
-
-    /// <summary>
-    /// Direkt NACH einem normalen ImGui-Widget (Combo/SliderInt) aufzurufen, das über LabelRow
-    /// beschriftet wurde - gleicht die Zeilenhöhe an eine ToggleRow an, die wegen ToggleHeightScale
-    /// bewusst etwas höher ist als ein Standard-Widget. Ohne das war der Abstand zwischen zwei
-    /// CardDivider-Linien je nachdem, ob dazwischen ein Toggle oder eine Combobox/Slider stand,
-    /// unterschiedlich groß (Nutzer-Report/Screenshot).
-    /// </summary>
-    public static void PadRowToToggleHeight()
-    {
-        var extra = ImGui.GetFrameHeight() * (ToggleHeightScale - 1f);
-        if (extra > 0f)
-            ImGui.Dummy(new Vector2(0f, extra));
-    }
+    // Von ToggleRow UND ToggleSwitch genutzt, damit beide immer dieselbe Höhe annehmen - exakt die
+    // Standard-Framehöhe (1.0x), damit Toggle- und Combo-/Slider-Zeilen gleich hoch sind (Nutzer-
+    // Report/Screenshot: unterschiedlich große Abstände zwischen den Trennlinien, je nachdem ob
+    // dazwischen ein Toggle oder eine Combobox/Slider stand - ein Versuch, stattdessen die
+    // Combo-/Slider-Zeilen per Dummy() auf die größere Toggle-Höhe aufzupolstern, sah noch
+    // schlechter aus, daher jetzt umgekehrt: der Toggle ist nicht mehr extra groß).
+    private const float ToggleHeightScale = 1f;
 
     /// <summary>
     /// Zeile "Beschriftung ..................... Toggle" - Kombination aus LabelRow und

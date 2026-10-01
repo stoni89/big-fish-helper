@@ -825,8 +825,6 @@ public class MainWindow : Window
             ImGui.PopStyleColor();
         }
 
-        ModernUi.PadRowToToggleHeight();
-
         // "Always Up Fish Backup Timer" (Nutzeranforderung) - siehe FishingAutomation.UpdateWaiting.
         // Gleiche Karte wie das Fischer-Preset darüber (Nutzeranforderung: "Fish" und "Fishing"
         // zusammenfassen, "Fishing" behalten).
@@ -842,8 +840,6 @@ public class MainWindow : Window
             config.AlwaysUpFishBackupTimerMinutes = backupTimerMinutes;
         if (ImGui.IsItemDeactivatedAfterEdit())
             config.Save();
-
-        ModernUi.PadRowToToggleHeight();
 
         // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
         // ShouldDesynthesizeNow/UpdateDesynthesizing. Rein nativ über AgentSalvage.SalvageItem, kein
@@ -914,8 +910,6 @@ public class MainWindow : Window
 
             ImGui.EndCombo();
         }
-
-        ModernUi.PadRowToToggleHeight();
 
         ModernUi.CardDivider();
         var useSprintInCities = config.UseSprintInCities;
