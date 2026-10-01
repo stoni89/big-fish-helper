@@ -317,10 +317,28 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     /// aber mehrfach fangbaren Fisch nie erneut von false auf true wechseln. Die Fang-Nachricht
     /// enthält einen anklickbaren Item-Link (ItemPayload) für den gefangenen Fisch - darüber wird
     /// sprachunabhängig per Item-Id abgeglichen, nicht über den (lokalisierten) Text.
+    ///
+    /// Zusätzlich GatheringSystemMessage (Nutzer-Report: "Triple Threat" - ein besonders großer/
+    /// seltener Fisch - wurde gefangen, aber kein Quit ausgelöst): besonders bemerkenswerte Fänge
+    /// (Rekord-/Achievement-Ankündigung) kommen offenbar unter diesem Chat-Typ statt dem normalen
+    /// Gathering, bisher aber nur mit diesem einen Fisch beobachtet - falls auch das nicht reicht,
+    /// hilft der Log-Eintrag unten (unabhängig vom ChatType) bei der Nachjustierung.
     /// </summary>
     private void OnChatMessage(IHandleableChatMessage message)
     {
-        if (message.LogKind != XivChatType.Gathering)
+        if (target != null && state != State.Waiting && !IsTest)
+        {
+            foreach (var diagnosticPayload in message.Message.Payloads)
+            {
+                if (diagnosticPayload is ItemPayload diagnosticItem && diagnosticItem.ItemId == target.ItemId
+                    && message.LogKind != XivChatType.Gathering && message.LogKind != XivChatType.GatheringSystemMessage)
+                {
+                    Plugin.Log.Info($"[FishingAutomation] OnChatMessage: Item-Link für aktuelles Ziel {FishName(target)} in Chat-Zeile mit unerwartetem LogKind={message.LogKind}: \"{message.Message.TextValue}\".");
+                }
+            }
+        }
+
+        if (message.LogKind != XivChatType.Gathering && message.LogKind != XivChatType.GatheringSystemMessage)
             return;
 
         foreach (var payload in message.Message.Payloads)
