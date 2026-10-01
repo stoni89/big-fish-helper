@@ -2386,7 +2386,7 @@ public class MainWindow : Window
         {
             Title = Loc.T("Log", "Log"),
             Content = text,
-            Type = NotificationType.Info,
+            Type = NotificationType.Success,
             MinimizedText = text,
         });
     }
