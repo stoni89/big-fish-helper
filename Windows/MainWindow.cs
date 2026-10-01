@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Reflection;
+using System.Text;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Interface;
 using Dalamud.Interface.ManagedFontAtlas;
@@ -58,6 +59,16 @@ public class MainWindow : Window
     // nach oben gescrollt hat (wie bei einem Terminal/tail -f) - true, sobald die Scroll-Position beim
     // letzten Frame nah am unteren Ende war.
     private bool logAutoScroll = true;
+
+    // Quellen-Filter (siehe SplitLogSource) - enthält die Quellen, die NICHT angezeigt werden sollen;
+    // leer = alle Quellen sichtbar (Standard, damit beim ersten Öffnen nichts ausgeblendet ist).
+    private readonly HashSet<string> logExcludedSources = new();
+
+    // Kopiermodus (Nutzeranforderung: "eventuell wie beim xllog mit dem Kopiermodus") - solange aktiv,
+    // sind Zeilen anklickbar/markierbar (Shift = Bereich, Strg = einzeln an/abwählen) statt nur Text.
+    private bool logCopyModeEnabled;
+    private readonly HashSet<long> logSelectedIds = new();
+    private int? logLastClickedRowIndex;
 
     private RailPage railPage = RailPage.FishData;
     private bool collapsed;
@@ -2031,6 +2042,16 @@ public class MainWindow : Window
             Loc.T("Eigene Log-Zeilen dieses Plugins - durchsuchbar und nach Stufe filterbar, ohne /xllog öffnen zu müssen.",
                 "This plugin's own log lines - searchable and filterable by level, without opening /xllog."));
 
+        var entries = PluginLogStore.Snapshot();
+        // Für den Quellen-Filter-Popup: alle in den aktuellen Einträgen vorkommenden Quellen (eckige
+        // Klammern am Anfang, siehe SplitLogSource), unabhängig von Stufe/Suchtext/aktueller Auswahl.
+        var allSources = entries
+            .Select(e => SplitLogSource(e.Message).Source)
+            .Where(s => !string.IsNullOrEmpty(s))
+            .Distinct()
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         ModernUi.BeginCard();
         ImGui.SetNextItemWidth(320f);
         ImGui.InputTextWithHint("##LogSearch", Loc.T("Suchen...", "Search..."), ref logSearchText, 200);
@@ -2038,6 +2059,74 @@ public class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button(Loc.T("Leeren", "Clear") + "##ClearLog"))
             PluginLogStore.Clear();
+
+        ImGui.SameLine();
+        var sourceFilterActive = logExcludedSources.Count > 0;
+        if (sourceFilterActive)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(Loc.T("Quelle...", "Source...") + "##LogSourceFilter"))
+            ImGui.OpenPopup("##LogSourceFilterPopup");
+        if (sourceFilterActive)
+            ImGui.PopStyleColor();
+
+        if (ImGui.BeginPopup("##LogSourceFilterPopup"))
+        {
+            if (ImGui.Button(Loc.T("Alle", "All") + "##LogSourceAll"))
+                logExcludedSources.Clear();
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T("Keine", "None") + "##LogSourceNone"))
+            {
+                logExcludedSources.Clear();
+                foreach (var source in allSources)
+                    logExcludedSources.Add(source);
+            }
+            ImGui.Separator();
+            foreach (var source in allSources)
+            {
+                var shown = !logExcludedSources.Contains(source);
+                if (ImGui.Checkbox(source + "##LogSourceCheck_" + source, ref shown))
+                {
+                    if (shown)
+                        logExcludedSources.Remove(source);
+                    else
+                        logExcludedSources.Add(source);
+                }
+            }
+            ImGui.EndPopup();
+        }
+
+        ImGui.SameLine();
+        if (logCopyModeEnabled)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(Loc.T("Kopiermodus", "Copy mode") + "##LogCopyMode"))
+        {
+            logCopyModeEnabled = !logCopyModeEnabled;
+            if (!logCopyModeEnabled)
+            {
+                logSelectedIds.Clear();
+                logLastClickedRowIndex = null;
+            }
+        }
+        if (logCopyModeEnabled)
+            ImGui.PopStyleColor();
+
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.T("Alles kopieren", "Copy all") + "##LogCopyAll"))
+            CopyLogLines(entries);
+
+        if (logCopyModeEnabled && logSelectedIds.Count > 0)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T($"Auswahl kopieren ({logSelectedIds.Count})", $"Copy selection ({logSelectedIds.Count})") + "##LogCopySelection"))
+                CopyLogLines(entries.Where(e => logSelectedIds.Contains(e.Id)));
+
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T("Auswahl aufheben", "Clear selection") + "##LogClearSelection"))
+            {
+                logSelectedIds.Clear();
+                logLastClickedRowIndex = null;
+            }
+        }
 
         ImGui.Spacing();
 
@@ -2054,8 +2143,9 @@ public class MainWindow : Window
         DrawLogLevelToggle(Loc.T("Kritisch", "Critical"), LogEventLevel.Fatal, new Vector4(1f, 0.2f, 0.5f, 1f));
         ModernUi.EndCard();
 
-        var entries = PluginLogStore.Snapshot();
         var filtered = entries.Where(e => logLevelFilter.Contains(e.Level));
+        if (logExcludedSources.Count > 0)
+            filtered = filtered.Where(e => !logExcludedSources.Contains(SplitLogSource(e.Message).Source));
         if (!string.IsNullOrWhiteSpace(logSearchText))
             filtered = filtered.Where(e => e.Message.Contains(logSearchText, StringComparison.OrdinalIgnoreCase));
         var filteredList = filtered.ToList();
@@ -2089,8 +2179,9 @@ public class MainWindow : Window
                 (3, Loc.T("NACHRICHT", "MESSAGE")),
             }, lastColumn: 3, columnIndent: logColumnIndent);
 
-            foreach (var entry in filteredList)
+            for (var rowIndex = 0; rowIndex < filteredList.Count; rowIndex++)
             {
+                var entry = filteredList[rowIndex];
                 var color = entry.Level switch
                 {
                     LogEventLevel.Warning => new Vector4(0.95f, 0.8f, 0.3f, 1f),
@@ -2103,9 +2194,21 @@ public class MainWindow : Window
                 var (source, message) = SplitLogSource(entry.Message);
 
                 ImGui.TableNextRow();
+                ImGui.TableNextColumn();
+
+                // Kopiermodus: Zeile per unsichtbarem Selectable (spannt alle Spalten) anklickbar machen -
+                // identische Markier-Logik zu xllogs Kopiermodus (Klick = nur diese Zeile, Shift = Bereich
+                // ab letztem Klick, Strg = einzelne Zeile an/abwählen ohne die übrige Auswahl zu verlieren).
+                if (logCopyModeEnabled)
+                {
+                    var isSelected = logSelectedIds.Contains(entry.Id);
+                    if (ImGui.Selectable($"##LogRow_{entry.Id}", isSelected, ImGuiSelectableFlags.SpanAllColumns))
+                        HandleLogRowClick(rowIndex, entry.Id, filteredList);
+                    ImGui.SameLine();
+                }
+
                 ImGui.PushStyleColor(ImGuiCol.Text, color);
 
-                ImGui.TableNextColumn();
                 ImGui.TextUnformatted(entry.Timestamp.ToString("HH:mm:ss"));
 
                 ImGui.TableNextColumn();
@@ -2135,6 +2238,51 @@ public class MainWindow : Window
 
             ImGui.EndTable();
         }
+    }
+
+    /// <summary>
+    /// Markier-Logik für den Kopiermodus (siehe DrawLogPage) - gleiches Verhalten wie in Dateimanagern/
+    /// xllog: einfacher Klick wählt nur die geklickte Zeile, Shift+Klick markiert den ganzen Bereich ab
+    /// der zuletzt geklickten Zeile, Strg+Klick schaltet nur die geklickte Zeile an/aus ohne den Rest
+    /// der Auswahl zu verlieren.
+    /// </summary>
+    private void HandleLogRowClick(int rowIndex, long entryId, List<LogEntry> filteredList)
+    {
+        var io = ImGui.GetIO();
+        if (io.KeyShift && logLastClickedRowIndex.HasValue)
+        {
+            var start = Math.Min(logLastClickedRowIndex.Value, rowIndex);
+            var end = Math.Max(logLastClickedRowIndex.Value, rowIndex);
+            for (var i = start; i <= end; i++)
+                logSelectedIds.Add(filteredList[i].Id);
+        }
+        else if (io.KeyCtrl)
+        {
+            if (!logSelectedIds.Remove(entryId))
+                logSelectedIds.Add(entryId);
+        }
+        else
+        {
+            logSelectedIds.Clear();
+            logSelectedIds.Add(entryId);
+        }
+
+        logLastClickedRowIndex = rowIndex;
+    }
+
+    private void CopyLogLines(IEnumerable<LogEntry> lines)
+    {
+        var text = new StringBuilder();
+        foreach (var entry in lines)
+        {
+            var (source, message) = SplitLogSource(entry.Message);
+            var sourcePrefix = string.IsNullOrEmpty(source) ? string.Empty : $"[{source}] ";
+            text.Append('[').Append(entry.Timestamp.ToString("HH:mm:ss")).Append(']')
+                .Append(" [").Append(LevelLabel(entry.Level)).Append("] ")
+                .Append(sourcePrefix).Append(message).Append('\n');
+        }
+
+        ImGui.SetClipboardText(text.ToString());
     }
 
     private void DrawLogLevelToggle(string label, LogEventLevel level, Vector4 color)

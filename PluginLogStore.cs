@@ -4,7 +4,10 @@ using Serilog.Events;
 
 namespace BigFishHelper;
 
-public readonly record struct LogEntry(DateTime Timestamp, LogEventLevel Level, string Message);
+// Id = fortlaufende, eindeutige Nummer je Eintrag (siehe PluginLogStore.Add) - für die Zeilen-
+// Markierung auf der Log-Seite (MainWindow.DrawLogPage): die gefilterte/angezeigte Liste wird jeden
+// Frame neu aus dem Snapshot gebaut, ein reiner Listenindex wäre dafür als Auswahl-Schlüssel instabil.
+public readonly record struct LogEntry(long Id, DateTime Timestamp, LogEventLevel Level, string Message);
 
 /// <summary>
 /// Hält die letzten eigenen Log-Einträge im Speicher, damit sie im Plugin-Menü (Log-Seite) durchsucht/
@@ -18,12 +21,13 @@ public static class PluginLogStore
     private const int MaxEntries = 5000;
     private static readonly object padlock = new();
     private static readonly List<LogEntry> entries = new();
+    private static long nextId = 1;
 
     public static void Add(LogEventLevel level, string message)
     {
         lock (padlock)
         {
-            entries.Add(new LogEntry(DateTime.Now, level, message));
+            entries.Add(new LogEntry(nextId++, DateTime.Now, level, message));
             if (entries.Count > MaxEntries)
                 entries.RemoveRange(0, entries.Count - MaxEntries);
         }
