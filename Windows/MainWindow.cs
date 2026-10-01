@@ -1737,9 +1737,12 @@ public class MainWindow : Window
     /// <summary>
     /// Dezente Tabellen-Kopfzeile wie bei der Blacklist im Explorer's Codex (statt ImGui.TableHeadersRow
     /// mit farbigem Balken): kleine Großbuchstaben in TextMuted, darunter eine feine Linie über die
-    /// volle Tabellenbreite.
+    /// volle Tabellenbreite. columnIndent (Spalte -> zusätzlicher Abstand in Pixeln) verschiebt
+    /// einzelne Spalten-Überschriften nach rechts - für Tabellen, deren Zeileninhalt in denselben
+    /// Spalten ebenfalls etwas vom linken Rand eingerückt ist (Nutzeranforderung: Kopfzeile und
+    /// Inhalt sollen denselben Abstand haben), ohne dass sich das auf andere Tabellen auswirkt.
     /// </summary>
-    private static void DrawTableHeader((int Column, string Text)[] headers, int lastColumn, int? searchColumn = null, Action? drawSearchToggle = null)
+    private static void DrawTableHeader((int Column, string Text)[] headers, int lastColumn, int? searchColumn = null, Action? drawSearchToggle = null, IReadOnlyDictionary<int, float>? columnIndent = null)
     {
         ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
         ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, 0u);
@@ -1747,6 +1750,8 @@ public class MainWindow : Window
         {
             ImGui.TableSetColumnIndex(column);
             ImGui.Dummy(new Vector2(0f, 2f));
+            if (columnIndent != null && columnIndent.TryGetValue(column, out var indent))
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + indent);
             ImGui.SetWindowFontScale(0.85f);
             ImGui.TextColored(ModernUi.TextMuted, header);
             if (column == searchColumn)
@@ -2057,14 +2062,22 @@ public class MainWindow : Window
 
         ImGui.TextColored(ModernUi.TextMuted, Loc.T($"{filteredList.Count} von {entries.Count} Zeilen", $"{filteredList.Count} of {entries.Count} lines"));
 
-        const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV
-            | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit;
+        // Keine vertikalen Trennlinien (nur die horizontale Linie unter der Kopfzeile, siehe
+        // DrawTableHeader) - identisch zur Play-Tabelle (##PlannedFish), die ebenfalls bewusst ohne
+        // BordersInnerV auskommt. SizingStretchProp statt fester Pixelbreiten, damit die Spalten bei
+        // schmalerem/breiterem Fenster alle gemeinsam mitschrumpfen/-wachsen (Nutzeranforderung).
+        const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingStretchProp;
+        // Kategorie/Quelle/Nachricht bekommen etwas Abstand zum linken Spaltenrand - Kopfzeile UND
+        // Zeileninhalt nutzen denselben Wert, damit beide exakt fluchten (Nutzeranforderung).
+        const float columnLeftPadding = 8f;
+        var logColumnIndent = new Dictionary<int, float> { [1] = columnLeftPadding, [2] = columnLeftPadding, [3] = columnLeftPadding };
+
         if (ImGui.BeginTable("##LogTable", 4, tableFlags, new Vector2(0f, -1f)))
         {
-            ImGui.TableSetupColumn("##LogTime", ImGuiTableColumnFlags.WidthFixed, 70f);
-            ImGui.TableSetupColumn("##LogCategory", ImGuiTableColumnFlags.WidthFixed, 80f);
-            ImGui.TableSetupColumn("##LogSource", ImGuiTableColumnFlags.WidthFixed, 140f);
-            ImGui.TableSetupColumn("##LogMessage", ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("##LogTime", ImGuiTableColumnFlags.WidthStretch, 70f);
+            ImGui.TableSetupColumn("##LogCategory", ImGuiTableColumnFlags.WidthStretch, 80f);
+            ImGui.TableSetupColumn("##LogSource", ImGuiTableColumnFlags.WidthStretch, 140f);
+            ImGui.TableSetupColumn("##LogMessage", ImGuiTableColumnFlags.WidthStretch, 400f);
             ImGui.TableSetupScrollFreeze(0, 1);
             // Dieselbe dezente Kopfzeile wie bei den übrigen Tabellen (siehe DrawTableHeader-Kommentar),
             // statt ImGui.TableHeadersRow() mit dem Standard-ImGui-Look.
@@ -2074,7 +2087,7 @@ public class MainWindow : Window
                 (1, Loc.T("KATEGORIE", "CATEGORY")),
                 (2, Loc.T("QUELLE", "SOURCE")),
                 (3, Loc.T("NACHRICHT", "MESSAGE")),
-            }, lastColumn: 3);
+            }, lastColumn: 3, columnIndent: logColumnIndent);
 
             foreach (var entry in filteredList)
             {
@@ -2096,13 +2109,18 @@ public class MainWindow : Window
                 ImGui.TextUnformatted(entry.Timestamp.ToString("HH:mm:ss"));
 
                 ImGui.TableNextColumn();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + columnLeftPadding);
                 ImGui.TextUnformatted(LevelLabel(entry.Level));
 
                 ImGui.TableNextColumn();
                 if (!string.IsNullOrEmpty(source))
+                {
+                    ImGui.SetCursorPosX(ImGui.GetCursorPosX() + columnLeftPadding);
                     ImGui.TextWrapped(source);
+                }
 
                 ImGui.TableNextColumn();
+                ImGui.SetCursorPosX(ImGui.GetCursorPosX() + columnLeftPadding);
                 ImGui.TextWrapped(message);
 
                 ImGui.PopStyleColor();
