@@ -2057,31 +2057,51 @@ public class MainWindow : Window
 
         ImGui.TextColored(ModernUi.TextMuted, Loc.T($"{filteredList.Count} von {entries.Count} Zeilen", $"{filteredList.Count} of {entries.Count} lines"));
 
-        ImGui.BeginChild("##LogScroll", new Vector2(0f, -1f), true);
-        foreach (var entry in filteredList)
+        const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV
+            | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit;
+        if (ImGui.BeginTable("##LogTable", 3, tableFlags, new Vector2(0f, -1f)))
         {
-            var color = entry.Level switch
+            ImGui.TableSetupColumn(Loc.T("Zeit", "Time"), ImGuiTableColumnFlags.WidthFixed, 70f);
+            ImGui.TableSetupColumn(Loc.T("Kategorie", "Category"), ImGuiTableColumnFlags.WidthFixed, 80f);
+            ImGui.TableSetupColumn(Loc.T("Nachricht", "Message"), ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupScrollFreeze(0, 1);
+            ImGui.TableHeadersRow();
+
+            foreach (var entry in filteredList)
             {
-                LogEventLevel.Warning => new Vector4(0.95f, 0.8f, 0.3f, 1f),
-                LogEventLevel.Error => new Vector4(0.95f, 0.35f, 0.4f, 1f),
-                LogEventLevel.Fatal => new Vector4(1f, 0.2f, 0.5f, 1f),
-                LogEventLevel.Debug or LogEventLevel.Verbose => ModernUi.TextMuted,
-                _ => Vector4.One,
-            };
+                var color = entry.Level switch
+                {
+                    LogEventLevel.Warning => new Vector4(0.95f, 0.8f, 0.3f, 1f),
+                    LogEventLevel.Error => new Vector4(0.95f, 0.35f, 0.4f, 1f),
+                    LogEventLevel.Fatal => new Vector4(1f, 0.2f, 0.5f, 1f),
+                    LogEventLevel.Debug or LogEventLevel.Verbose => ModernUi.TextMuted,
+                    _ => Vector4.One,
+                };
 
-            ImGui.PushStyleColor(ImGuiCol.Text, color);
-            ImGui.TextWrapped($"[{entry.Timestamp:HH:mm:ss}] [{LevelLabel(entry.Level)}] {entry.Message}");
-            ImGui.PopStyleColor();
+                ImGui.TableNextRow();
+                ImGui.PushStyleColor(ImGuiCol.Text, color);
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(entry.Timestamp.ToString("HH:mm:ss"));
+
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(LevelLabel(entry.Level));
+
+                ImGui.TableNextColumn();
+                ImGui.TextWrapped(entry.Message);
+
+                ImGui.PopStyleColor();
+            }
+
+            // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
+            // manuelles Hochscrollen zum Lesen älterer Zeilen bei jeder neuen Zeile sofort wieder
+            // nach unten gerissen.
+            if (logAutoScroll)
+                ImGui.SetScrollHereY(1f);
+            logAutoScroll = ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 2f;
+
+            ImGui.EndTable();
         }
-
-        // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
-        // manuelles Hochscrollen zum Lesen älterer Zeilen bei jeder neuen Zeile sofort wieder nach
-        // unten gerissen.
-        if (logAutoScroll)
-            ImGui.SetScrollHereY(1f);
-        logAutoScroll = ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 2f;
-
-        ImGui.EndChild();
     }
 
     private void DrawLogLevelToggle(string label, LogEventLevel level, Vector4 color)
