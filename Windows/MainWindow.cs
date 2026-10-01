@@ -2227,15 +2227,13 @@ public class MainWindow : Window
             for (var i = start; i <= end; i++)
                 logSelectedIds.Add(filteredList[i].Id);
         }
-        else if (io.KeyCtrl)
-        {
-            if (!logSelectedIds.Remove(entryId))
-                logSelectedIds.Add(entryId);
-        }
         else
         {
-            logSelectedIds.Clear();
-            logSelectedIds.Add(entryId);
+            // Einfacher Klick (ohne Strg) schaltet nur die geklickte Zeile an/aus, ohne die übrige
+            // Auswahl zu verlieren (Nutzeranforderung: "einfach mit Linksklick mehrere Zeilen markieren
+            // anstatt Strg + Linksklick") - "Auswahl aufheben" dient zum kompletten Zurücksetzen.
+            if (!logSelectedIds.Remove(entryId))
+                logSelectedIds.Add(entryId);
         }
 
         logLastClickedRowIndex = rowIndex;
@@ -2243,15 +2241,12 @@ public class MainWindow : Window
     }
 
     /// <summary>
-    /// Ziehauswahl (siehe DrawLogPage) - ersetzt die Auswahl jeden Frame durch den Bereich zwischen der
-    /// Zeile, auf der die Maustaste heruntergedrückt wurde, und der aktuell gehoverten Zeile. Mit Strg
-    /// gedrückt wird der Bereich zur bestehenden Auswahl hinzugefügt statt sie zu ersetzen.
+    /// Ziehauswahl (siehe DrawLogPage) - fügt den Bereich zwischen der Zeile, auf der die Maustaste
+    /// heruntergedrückt wurde, und der aktuell gehoverten Zeile der Auswahl hinzu, ohne die bestehende
+    /// Auswahl zu ersetzen (gleiches Prinzip wie der einfache Klick ohne Strg).
     /// </summary>
     private void ApplyLogDragSelection(int anchorRowIndex, int currentRowIndex, List<LogEntry> filteredList)
     {
-        if (!ImGui.GetIO().KeyCtrl)
-            logSelectedIds.Clear();
-
         var start = Math.Min(anchorRowIndex, currentRowIndex);
         var end = Math.Max(anchorRowIndex, currentRowIndex);
         for (var i = start; i <= end; i++)
@@ -2296,7 +2291,7 @@ public class MainWindow : Window
             ? Loc.T("Auswahl aufheben", "Clear selection")
             : null;
 
-        var labels = new List<string> { sourceLabel, copyModeLabel, copyAllLabel };
+        var labels = new List<string> { copyModeLabel, copyAllLabel, sourceLabel };
         if (clearSelectionLabel != null)
             labels.Add(clearSelectionLabel);
 
@@ -2306,6 +2301,30 @@ public class MainWindow : Window
 
         ImGui.SameLine(MathF.Max(0f, lineAvail - totalWidth));
 
+        if (logCopyModeEnabled)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(copyModeLabel + "##LogCopyMode"))
+        {
+            logCopyModeEnabled = !logCopyModeEnabled;
+            if (!logCopyModeEnabled)
+            {
+                logSelectedIds.Clear();
+                logLastClickedRowIndex = null;
+                logDragSelecting = false;
+                logDragAnchorRowIndex = null;
+                logLastCopiedSelectionSignature = string.Empty;
+            }
+        }
+        if (logCopyModeEnabled)
+            ImGui.PopStyleColor();
+
+        ImGui.SameLine();
+        if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
+            CopyLogLines(entries);
+
+        // Quelle-Filter direkt neben "Auswahl aufheben" platziert (Nutzeranforderung: "den Source
+        // Button neben den Clear Button hinsetzen").
+        ImGui.SameLine();
         var sourceFilterActive = logExcludedSources.Count > 0;
         if (sourceFilterActive)
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
@@ -2339,28 +2358,6 @@ public class MainWindow : Window
             }
             ImGui.EndPopup();
         }
-
-        ImGui.SameLine();
-        if (logCopyModeEnabled)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
-        if (ImGui.Button(copyModeLabel + "##LogCopyMode"))
-        {
-            logCopyModeEnabled = !logCopyModeEnabled;
-            if (!logCopyModeEnabled)
-            {
-                logSelectedIds.Clear();
-                logLastClickedRowIndex = null;
-                logDragSelecting = false;
-                logDragAnchorRowIndex = null;
-                logLastCopiedSelectionSignature = string.Empty;
-            }
-        }
-        if (logCopyModeEnabled)
-            ImGui.PopStyleColor();
-
-        ImGui.SameLine();
-        if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
-            CopyLogLines(entries);
 
         if (clearSelectionLabel != null)
         {
