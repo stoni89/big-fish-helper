@@ -850,7 +850,7 @@ public class MainWindow : Window
             config.Save();
         // Etwas geringer als die gemessene Widget-Höhe (Nutzeranforderung: Zeilenhöhe schrittweise
         // feinjustieren) - siehe EndLabelRow-Kommentar.
-        ModernUi.EndLabelRow(backupTimerRowStart, ImGui.GetItemRectSize().Y - 5f);
+        ModernUi.EndLabelRow(backupTimerRowStart, ImGui.GetItemRectSize().Y - 7f);
 
         // "Desynthesis nach dem Angeln" (Nutzeranforderung) - siehe FishingAutomation.
         // ShouldDesynthesizeNow/UpdateDesynthesizing. Rein nativ über AgentSalvage.SalvageItem, kein
