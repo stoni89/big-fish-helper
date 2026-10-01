@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Interface;
 using Dalamud.Interface.ManagedFontAtlas;
@@ -8,13 +9,42 @@ namespace BigFishHelper.Windows;
 
 /// <summary>
 /// Kleines Set wiederverwendbarer ImGui-Bausteine für einen moderneren Look des Optionsfensters
-/// (dunkler Verlaufshintergrund, abgerundete Karten, Toggle-Switches, Icon-Sidebar) - ImGui bietet
-/// dafür von sich aus nichts, alles hier wird manuell per Draw-List gezeichnet. Bewusst als
-/// eigenständige, zustandslose Helfer (keine Abhängigkeit auf Plugin/Configuration), damit sie sich
-/// auch in anderen Fenstern wiederverwenden lassen.
+/// (dunkler Verlaufshintergrund, abgerundete Karten mit sanftem Leuchtrahmen, animierte Toggle-
+/// Switches, Icon-Sidebar) - ImGui bietet dafür von sich aus nichts, alles hier wird manuell per
+/// Draw-List gezeichnet. Hält dafür etwas eigenen Animationszustand (animTime/animDelta/
+/// animatedValues) - bewusst auf einfache, pro-ID interpolierte float-Werte beschränkt, keine
+/// Abhängigkeit zu einem bestimmten Fenster oder zu Plugin/Configuration.
 /// </summary>
 public static class ModernUi
 {
+    private static float animTime;
+    private static float animDelta;
+
+    /// <summary>Von MainWindow.PreDraw einmal pro Frame mit ImGui.GetIO().DeltaTime aufgerufen.</summary>
+    public static void AdvanceAnimationTime(float deltaSeconds)
+    {
+        animDelta = deltaSeconds;
+        animTime += deltaSeconds;
+    }
+
+    // Pro-ID weich interpolierter Wert (z.B. Toggle-Knopf-Position, Sidebar-Hover-Helligkeit) -
+    // exponentielle Annäherung an target, Geschwindigkeit über speed (höher = schneller).
+    private static readonly Dictionary<string, float> animatedValues = new();
+
+    private static float Animate(string id, float target, float speed)
+    {
+        if (!animatedValues.TryGetValue(id, out var current))
+            current = target;
+
+        var t = Math.Clamp(animDelta * speed, 0f, 1f);
+        current += (target - current) * t;
+        animatedValues[id] = current;
+        return current;
+    }
+
+    private static Vector4 LerpColor(Vector4 a, Vector4 b, float t) =>
+        new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, a.Z + (b.Z - a.Z) * t, a.W + (b.W - a.W) * t);
+
     public static readonly Vector4 CardBg = new(0.13f, 0.21f, 0.33f, 0.92f);
     public static readonly Vector4 CardBorder = new(1f, 1f, 1f, 0.06f);
     // Helles Blau als Plugin-Farbe (Big Fish Helper) - auch die Hintergründe sind blau statt grau-schwarz.
@@ -45,11 +75,11 @@ public static class ModernUi
     /// </summary>
     public static void PushStyle(Vector2? windowPadding = null)
     {
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 10f);
-        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 8f);
-        ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 8f);
-        ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarRounding, 8f);
-        ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 8f);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 14f);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 10f);
+        ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 10f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ScrollbarRounding, 10f);
+        ImGui.PushStyleVar(ImGuiStyleVar.TabRounding, 10f);
         // Standardmäßig ein schmaler "Griff", der auf der Schiene schwimmt - das ließ Slider neben
         // den (voll ausgefüllten) Dropdown-Boxen kleiner/dünner wirken, obwohl die Box selbst exakt
         // gleich hoch ist (beide nutzen dasselbe FramePadding). Ein breiterer Griff gleicht das an.
@@ -216,8 +246,30 @@ public static class ModernUi
 
         var drawList = ImGui.GetWindowDrawList();
         drawList.ChannelsSetCurrent(0);
-        drawList.AddRectFilled(min, max, ImGui.ColorConvertFloat4ToU32(CardBg), 12f);
-        drawList.AddRect(min, max, ImGui.ColorConvertFloat4ToU32(borderColor ?? CardBorder), 12f);
+
+        const float rounding = 16f;
+
+        // Weicher Schatten - mehrere nach unten versetzte, zunehmend blassere Rechtecke statt
+        // eines echten Blurs (den gibt ImGui-Draw-Lists nicht her).
+        for (var i = 3; i >= 1; i--)
+        {
+            var offset = new Vector2(0f, i * 2.5f);
+            var alpha = 0.035f * i;
+            drawList.AddRectFilled(min + offset, max + offset, ImGui.ColorConvertFloat4ToU32(new Vector4(0f, 0f, 0f, alpha)), rounding);
+        }
+
+        // Flache Füllung - ein echter Verlauf (AddRectFilledMultiColor) unterstützt keine Rundung
+        // (eckige Ecken unter dem runden Rahmen), und ein separates Tönungs-Band oben sah als
+        // sichtbar abgesetzter Streifen in der ersten Zeile falsch aus - einfach einfarbig, der
+        // pulsierende Rahmen liefert den Akzent.
+        drawList.AddRectFilled(min, max, ImGui.ColorConvertFloat4ToU32(CardBg), rounding);
+
+        // Leicht pulsierender, akzentfarbener Rahmen-Schimmer statt eines starren Rands.
+        var pulse = 0.5f + 0.5f * MathF.Sin(animTime * 1.3f);
+        var glowBorder = LerpColor(borderColor ?? CardBorder, Accent, 0.25f + 0.2f * pulse);
+        glowBorder.W = 0.35f + 0.15f * pulse;
+        drawList.AddRect(min, max, ImGui.ColorConvertFloat4ToU32(glowBorder), rounding, ImDrawFlags.None, 1.5f);
+
         drawList.ChannelsMerge();
 
         ImGui.Unindent(CardMargin);
@@ -242,11 +294,20 @@ public static class ModernUi
     /// <summary>
     /// Kleine Zwischenüberschrift direkt über einer Karte (z.B. "Match intro" im Referenzdesign) -
     /// um CardMargin eingerückt, damit sie mit dem eingerückten Karteninhalt darunter fluchtet statt
-    /// mit dem (weiter links liegenden) Kartenrand.
+    /// mit dem (weiter links liegenden) Kartenrand. Mit kleinem, sanft pulsierendem Akzent-Punkt
+    /// davor.
     /// </summary>
     public static void GroupLabel(string text)
     {
         ImGui.Indent(CardMargin);
+
+        const float dotRadius = 3.5f;
+        var lineHeight = ImGui.GetTextLineHeight() * 1.2f;
+        var dotCenter = ImGui.GetCursorScreenPos() + new Vector2(dotRadius, lineHeight * 0.5f);
+        var pulse = 0.6f + 0.4f * (0.5f + 0.5f * MathF.Sin(animTime * 2f));
+        ImGui.GetWindowDrawList().AddCircleFilled(dotCenter, dotRadius, ImGui.ColorConvertFloat4ToU32(new Vector4(Accent.X, Accent.Y, Accent.Z, pulse)), 16);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + dotRadius * 2f + 8f);
+
         ImGui.SetWindowFontScale(1.2f);
         ImGui.TextUnformatted(text);
         ImGui.SetWindowFontScale(1f);
@@ -256,7 +317,8 @@ public static class ModernUi
 
     /// <summary>
     /// Größere, fette Überschrift + gedämpfter Untertext darunter - für den Titel oben in jedem
-    /// Tab-Inhalt (entspricht "In match" / "The social touches..." im Referenzdesign).
+    /// Tab-Inhalt (entspricht "In match" / "The social touches..." im Referenzdesign). Darunter
+    /// statt einer schlichten Trennlinie ein leicht pulsierender, akzentfarbener Balken.
     /// </summary>
     public static void SectionHeader(string title, string? subtitle = null)
     {
@@ -275,11 +337,20 @@ public static class ModernUi
             ImGui.PopStyleColor();
         }
 
-        // Trennlinie zwischen Titel/Hilfstext und den eigentlichen Einstellungen darunter, mit
-        // etwas mehr Luft danach als ein einzelnes Spacing() geben würde - sonst säße die erste
-        // GroupLabel/Karte eines Tabs sichtbar zu knapp unter der Linie.
+        // Balken zwischen Titel/Hilfstext und den eigentlichen Einstellungen darunter, mit etwas
+        // mehr Luft danach als ein einzelnes Spacing() geben würde - sonst säße die erste
+        // GroupLabel/Karte eines Tabs sichtbar zu knapp darunter.
         ImGui.Spacing();
-        ImGui.Separator();
+
+        var avail = ImGui.GetContentRegionAvail().X;
+        var barWidth = MathF.Min(260f, avail);
+        var barPos = ImGui.GetCursorScreenPos();
+        var pulse = 0.5f + 0.5f * (0.5f + 0.5f * MathF.Sin(animTime * 1.6f));
+        var left = ImGui.ColorConvertFloat4ToU32(new Vector4(Accent.X, Accent.Y, Accent.Z, 0.35f + 0.35f * pulse));
+        var right = ImGui.ColorConvertFloat4ToU32(new Vector4(Accent.X, Accent.Y, Accent.Z, 0f));
+        ImGui.GetWindowDrawList().AddRectFilledMultiColor(barPos, barPos + new Vector2(barWidth, 3f), left, right, right, left);
+        ImGui.Dummy(new Vector2(0f, 3f));
+
         ImGui.Dummy(new Vector2(0f, 10f));
     }
 
@@ -407,8 +478,10 @@ public static class ModernUi
 
     /// <summary>
     /// Ein einzelner "An/Aus"-Schalter statt einer eckigen Checkbox - visuell wie in modernen
-    /// Settings-UIs üblich (siehe Referenzbild). Verhält sich wie ImGui.Checkbox: gibt true zurück,
-    /// wenn der Wert sich durch einen Klick geändert hat, und schreibt den neuen Wert in value.
+    /// Settings-UIs üblich (siehe Referenzbild). Der Knopf gleitet beim Umschalten weich zur Seite
+    /// statt zu springen, dazu ein leichtes Glühen um die Schiene, wenn eingeschaltet. Verhält sich
+    /// wie ImGui.Checkbox: gibt true zurück, wenn der Wert sich durch einen Klick geändert hat, und
+    /// schreibt den neuen Wert in value.
     /// </summary>
     public static bool ToggleSwitch(string id, ref bool value, float heightScale = ToggleHeightScale)
     {
@@ -427,25 +500,33 @@ public static class ModernUi
         var hovered = ImGui.IsItemHovered();
         var trackColor = value ? (hovered ? AccentHover : Accent) : (hovered ? ToggleOffHover : ToggleOff);
         var radius = height * 0.5f;
+        var knobRadius = radius - 2.5f;
+        var drawList = ImGui.GetWindowDrawList();
+
+        var knobT = Animate(id, value ? 1f : 0f, 14f);
+
+        var glowAlpha = 0.22f * knobT;
+        if (glowAlpha > 0.01f)
+        {
+            var glowColor = new Vector4(Accent.X, Accent.Y, Accent.Z, glowAlpha);
+            drawList.AddRectFilled(pos - new Vector2(3f, 3f), pos + new Vector2(width + 3f, height + 3f), ImGui.GetColorU32(glowColor), radius + 3f);
+        }
 
         // GetColorU32() statt ColorConvertFloat4ToU32() - rechnet den von ImGui.BeginDisabled()
         // gesetzten Alpha-Dimm-Faktor (style.Alpha) mit ein, sonst bleibt der Schalter bei
         // ausgegrauten Zeilen (z.B. "Ignore Big Fish", solange "Desynthesis nach dem Angeln" aus
         // ist) trotzdem voll sichtbar, während Label und Combo/Slider-Widgets sich korrekt abdunkeln.
-        var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(pos, pos + new Vector2(width, height), ImGui.GetColorU32(trackColor), radius);
-
-        var knobRadius = radius - 2.5f;
-        var knobX = value ? pos.X + width - radius : pos.X + radius;
+        var knobX = pos.X + radius + (width - radius * 2f) * knobT;
         drawList.AddCircleFilled(new Vector2(knobX, pos.Y + radius), knobRadius, ImGui.GetColorU32(Vector4.One), 32);
 
         return changed;
     }
 
     /// <summary>
-    /// Eine Zeile in der linken Icon-Sidebar (Nav-Eintrag) - abgerundete Hervorhebung + blauer
-    /// Akzentstrich links, wenn ausgewählt, sonst nur dezentes Hover. Gibt true zurück, wenn
-    /// angeklickt.
+    /// Eine Zeile in der linken Icon-Sidebar (Nav-Eintrag) - abgerundete Hervorhebung (weich
+    /// einblendend) + blauer, leicht pulsierender Akzentstrich links, wenn ausgewählt, sonst nur
+    /// dezentes Hover. Gibt true zurück, wenn angeklickt.
     /// </summary>
     public static bool SidebarItem(FontAwesomeIcon icon, string label, bool selected)
     {
@@ -465,13 +546,16 @@ public static class ModernUi
         ImGui.PopStyleColor(3);
 
         var drawList = ImGui.GetWindowDrawList();
-        if (selected || hovered)
+
+        // Weich einblendende Hervorhebung statt eines sofortigen An/Aus - fühlt sich beim
+        // Durchfahren der Liste mit der Maus runder an.
+        var targetHighlight = selected ? 1f : hovered ? 0.6f : 0f;
+        var highlight = Animate($"sidebar_{label}", targetHighlight, 16f);
+        if (highlight > 0.01f)
         {
-            drawList.AddRectFilled(
-                startPos,
-                startPos + new Vector2(width, height),
-                ImGui.ColorConvertFloat4ToU32(selected ? SidebarSelected : SidebarHover),
-                10f);
+            var baseColor = selected ? SidebarSelected : SidebarHover;
+            var fadedColor = new Vector4(baseColor.X, baseColor.Y, baseColor.Z, baseColor.W * highlight);
+            drawList.AddRectFilled(startPos, startPos + new Vector2(width, height), ImGui.ColorConvertFloat4ToU32(fadedColor), 10f);
         }
 
         if (selected)
@@ -481,10 +565,13 @@ public static class ModernUi
             // wäre bei voller Zeilenhöhe kaum noch etwas von der Rundung an den Enden zu sehen.
             const float barWidth = 5f;
             const float barMarginY = 8f;
+            var pulse = 0.75f + 0.25f * (0.5f + 0.5f * MathF.Sin(animTime * 2.2f));
+            var barColor = new Vector4(Accent.X, Accent.Y, Accent.Z, pulse);
+
             drawList.AddRectFilled(
                 startPos + new Vector2(0f, barMarginY),
                 startPos + new Vector2(barWidth, height - barMarginY),
-                ImGui.ColorConvertFloat4ToU32(Accent),
+                ImGui.ColorConvertFloat4ToU32(barColor),
                 barWidth * 0.5f);
         }
 

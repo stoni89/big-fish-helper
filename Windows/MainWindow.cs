@@ -139,6 +139,7 @@ public class MainWindow : Window
 
         // ImGuis Standard-WindowMinSize (32x32) würde das Einklappen auf CollapsedHeight verhindern.
         ImGui.PushStyleVar(ImGuiStyleVar.WindowMinSize, new Vector2(1f, 1f));
+        ModernUi.AdvanceAnimationTime(ImGui.GetIO().DeltaTime);
         ModernUi.PushStyle(new Vector2(12f, collapsed ? WindowPaddingYCollapsed : WindowPaddingY));
     }
 
