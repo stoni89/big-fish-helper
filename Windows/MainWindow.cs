@@ -2059,13 +2059,22 @@ public class MainWindow : Window
 
         const ImGuiTableFlags tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV
             | ImGuiTableFlags.Resizable | ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingFixedFit;
-        if (ImGui.BeginTable("##LogTable", 3, tableFlags, new Vector2(0f, -1f)))
+        if (ImGui.BeginTable("##LogTable", 4, tableFlags, new Vector2(0f, -1f)))
         {
-            ImGui.TableSetupColumn(Loc.T("Zeit", "Time"), ImGuiTableColumnFlags.WidthFixed, 70f);
-            ImGui.TableSetupColumn(Loc.T("Kategorie", "Category"), ImGuiTableColumnFlags.WidthFixed, 80f);
-            ImGui.TableSetupColumn(Loc.T("Nachricht", "Message"), ImGuiTableColumnFlags.WidthStretch);
+            ImGui.TableSetupColumn("##LogTime", ImGuiTableColumnFlags.WidthFixed, 70f);
+            ImGui.TableSetupColumn("##LogCategory", ImGuiTableColumnFlags.WidthFixed, 80f);
+            ImGui.TableSetupColumn("##LogSource", ImGuiTableColumnFlags.WidthFixed, 140f);
+            ImGui.TableSetupColumn("##LogMessage", ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupScrollFreeze(0, 1);
-            ImGui.TableHeadersRow();
+            // Dieselbe dezente Kopfzeile wie bei den übrigen Tabellen (siehe DrawTableHeader-Kommentar),
+            // statt ImGui.TableHeadersRow() mit dem Standard-ImGui-Look.
+            DrawTableHeader(new[]
+            {
+                (0, Loc.T("ZEIT", "TIME")),
+                (1, Loc.T("KATEGORIE", "CATEGORY")),
+                (2, Loc.T("QUELLE", "SOURCE")),
+                (3, Loc.T("NACHRICHT", "MESSAGE")),
+            }, lastColumn: 3);
 
             foreach (var entry in filteredList)
             {
@@ -2078,6 +2087,8 @@ public class MainWindow : Window
                     _ => Vector4.One,
                 };
 
+                var (source, message) = SplitLogSource(entry.Message);
+
                 ImGui.TableNextRow();
                 ImGui.PushStyleColor(ImGuiCol.Text, color);
 
@@ -2088,7 +2099,11 @@ public class MainWindow : Window
                 ImGui.TextUnformatted(LevelLabel(entry.Level));
 
                 ImGui.TableNextColumn();
-                ImGui.TextWrapped(entry.Message);
+                if (!string.IsNullOrEmpty(source))
+                    ImGui.TextWrapped(source);
+
+                ImGui.TableNextColumn();
+                ImGui.TextWrapped(message);
 
                 ImGui.PopStyleColor();
             }
@@ -2127,6 +2142,24 @@ public class MainWindow : Window
         LogEventLevel.Fatal => "CRT",
         _ => "???",
     };
+
+    /// <summary>
+    /// Fast jede Log-Zeile in diesem Projekt beginnt mit einer eigenen Quellenangabe in eckigen
+    /// Klammern (z.B. "[FishCatchState] ..."), die bisher einfach Teil des Nachrichtentexts war -
+    /// für die Log-Seite (Nutzeranforderung: "eventuell das [FishCatchState] auch als eigene Spalte")
+    /// hier als eigener Wert herausgelöst, Rest bleibt die eigentliche Nachricht ohne das Tag.
+    /// </summary>
+    private static (string Source, string Message) SplitLogSource(string message)
+    {
+        if (message.Length > 0 && message[0] == '[')
+        {
+            var close = message.IndexOf(']');
+            if (close > 1)
+                return (message[1..close], message[(close + 1)..].TrimStart());
+        }
+
+        return (string.Empty, message);
+    }
 
     private static void DrawDependenciesPage()
     {
