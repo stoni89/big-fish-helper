@@ -2249,11 +2249,14 @@ public class MainWindow : Window
                 ImGui.PopStyleColor();
             }
 
-            // Ziehauswahl endet, sobald die Maustaste wieder losgelassen wird.
+            // Ziehauswahl/Klick endet, sobald die Maustaste wieder losgelassen wird - genau an diesem
+            // Punkt (nicht während des Ziehens) wird benachrichtigt, damit ein Klick eine Notification
+            // erzeugt und eine Ziehauswahl über mehrere Zeilen trotzdem nur eine einzige.
             if (logDragSelecting && !ImGui.IsMouseDown(ImGuiMouseButton.Left))
             {
                 logDragSelecting = false;
                 logDragTouchedIds.Clear();
+                NotifyLogSelectionCount(logSelectedIds.Count);
             }
 
             // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
@@ -2345,7 +2348,9 @@ public class MainWindow : Window
     /// Kopiert die aktuelle Auswahl automatisch in die Zwischenablage (Nutzeranforderung: "direkt
     /// kopieren wenn man was auswählt", statt einen eigenen "Auswahl kopieren"-Knopf zu benötigen) -
     /// vergleicht mit der zuletzt kopierten Auswahl, damit eine Ziehauswahl nicht bei jedem Frame ohne
-    /// tatsächliche Änderung erneut in die Zwischenablage schreibt.
+    /// tatsächliche Änderung erneut in die Zwischenablage schreibt. Die Benachrichtigung (siehe
+    /// NotifyLogSelectionCount) erfolgt bewusst getrennt davon erst beim Loslassen der Maustaste, damit
+    /// eine Ziehauswahl über mehrere Zeilen nur eine einzige Notification erzeugt statt einer pro Frame.
     /// </summary>
     private void CopySelectionIfChanged(List<LogEntry> filteredList)
     {
@@ -2358,17 +2363,29 @@ public class MainWindow : Window
 
         logLastCopiedSelectionSignature = signature;
         CopyLogLines(filteredList.Where(e => logSelectedIds.Contains(e.Id)));
+    }
 
-        // Dalamud-Toast unten rechts (Nutzeranforderung: "da wo auch die Dalamud Updates stehen"),
-        // damit sofort sichtbar ist, dass und wie viele Zeilen markiert/kopiert wurden.
+    /// <summary>
+    /// Dalamud-Toast unten rechts (Nutzeranforderung: "da wo auch die Dalamud Updates stehen"), damit
+    /// sofort sichtbar ist, wie viele Zeilen markiert wurden - wird nur beim Loslassen der Maustaste
+    /// aufgerufen (siehe DrawLogPage), damit ein einzelner Klick genau eine Notification erzeugt und
+    /// mehrere einzelne Klicks entsprechend mehrere Notifications, eine Ziehauswahl über mehrere Zeilen
+    /// aber trotzdem nur eine einzige (Nutzeranforderung: "eine Notification... oder wenn man einzeln
+    /// anklickt mit mehreren Notifications").
+    /// </summary>
+    private static void NotifyLogSelectionCount(int count)
+    {
+        if (count == 0)
+            return;
+
         Plugin.NotificationManager.AddNotification(new Notification
         {
             Title = Loc.T("Log", "Log"),
-            Content = logSelectedIds.Count == 1
-                ? Loc.T("1 Zeile markiert und kopiert", "1 line marked and copied")
-                : Loc.T($"{logSelectedIds.Count} Zeilen markiert und kopiert", $"{logSelectedIds.Count} lines marked and copied"),
+            Content = count == 1
+                ? Loc.T("1 Zeile wurde markiert", "1 line was marked")
+                : Loc.T($"{count} Zeilen wurden markiert", $"{count} lines were marked"),
             Type = NotificationType.Info,
-            MinimizedText = logSelectedIds.Count.ToString(CultureInfo.InvariantCulture),
+            MinimizedText = count.ToString(CultureInfo.InvariantCulture),
         });
     }
 
@@ -2419,7 +2436,21 @@ public class MainWindow : Window
 
         ImGui.SameLine();
         if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
+        {
             CopyLogLines(entries);
+
+            // Grüner Erfolgs-Toast (Nutzeranforderung: "in grün, damit man sieht es war erfolgreich"),
+            // eigenständig von der blauen Info-Benachrichtigung der Zeilenmarkierung im Kopiermodus.
+            Plugin.NotificationManager.AddNotification(new Notification
+            {
+                Title = Loc.T("Log", "Log"),
+                Content = entries.Count == 1
+                    ? Loc.T("1 Zeile wurde kopiert", "1 line was copied")
+                    : Loc.T($"{entries.Count} Zeilen wurden kopiert", $"{entries.Count} lines were copied"),
+                Type = NotificationType.Success,
+                MinimizedText = entries.Count.ToString(CultureInfo.InvariantCulture),
+            });
+        }
 
         if (clearSelectionLabel != null)
         {
