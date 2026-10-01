@@ -71,9 +71,16 @@ public class MainWindow : Window
     private int? logLastClickedRowIndex;
 
     // Ziehauswahl (Maustaste über mehreren Zeilen gedrückt halten, wie in einem Datei-Explorer) -
-    // logDragAnchorRowIndex ist die Zeile, auf der die Maustaste heruntergedrückt wurde.
+    // logDragAnchorRowIndex ist die Zeile, auf der die Maustaste heruntergedrückt wurde. logDragSelectMode
+    // legt fest, ob dieser Zug Zeilen markiert oder demarkiert (abhängig davon, ob die Ankerzeile beim
+    // Herunterdrücken schon markiert war) - logDragTouchedIds merkt sich, welche Zeilen der aktuelle Zug
+    // bereits verändert hat, damit beim Zurückhovern genau diese Zeilen wieder in ihren Ausgangszustand
+    // zurückversetzt werden (Nutzeranforderung: "wenn ich wieder zurück hover sollen die Zeilen wieder
+    // demarkiert werden").
     private bool logDragSelecting;
     private int? logDragAnchorRowIndex;
+    private bool logDragSelectMode;
+    private readonly HashSet<long> logDragTouchedIds = new();
 
     // Zuletzt automatisch kopierte Auswahl (siehe CopySelectionIfChanged) - verhindert, dass während
     // einer Ziehauswahl bei unveränderter Markierung jeden Frame erneut in die Zwischenablage kopiert wird.
@@ -2203,6 +2210,12 @@ public class MainWindow : Window
                     {
                         logDragSelecting = true;
                         logDragAnchorRowIndex = rowIndex;
+                        // Modus für diesen Zug: war die Ankerzeile schon markiert, demarkiert der Zug
+                        // (so wird ein erneuter Klick auf eine markierte Zeile, inkl. Ziehen davon ausgehend,
+                        // zum Demarkieren); sonst markiert der Zug.
+                        logDragSelectMode = !isSelected;
+                        logDragTouchedIds.Clear();
+                        logDragTouchedIds.Add(entry.Id);
                         HandleLogRowClick(rowIndex, entry.Id, filteredList);
                     }
                     else if (logDragSelecting && rowHovered && ImGui.IsMouseDown(ImGuiMouseButton.Left) && logDragAnchorRowIndex.HasValue)
@@ -2237,7 +2250,10 @@ public class MainWindow : Window
 
             // Ziehauswahl endet, sobald die Maustaste wieder losgelassen wird.
             if (logDragSelecting && !ImGui.IsMouseDown(ImGuiMouseButton.Left))
+            {
                 logDragSelecting = false;
+                logDragTouchedIds.Clear();
+            }
 
             // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
             // manuelles Hochscrollen zum Lesen älterer Zeilen bei jeder neuen Zeile sofort wieder
@@ -2280,16 +2296,46 @@ public class MainWindow : Window
     }
 
     /// <summary>
-    /// Ziehauswahl (siehe DrawLogPage) - fügt den Bereich zwischen der Zeile, auf der die Maustaste
-    /// heruntergedrückt wurde, und der aktuell gehoverten Zeile der Auswahl hinzu, ohne die bestehende
-    /// Auswahl zu ersetzen (gleiches Prinzip wie der einfache Klick ohne Strg).
+    /// Ziehauswahl (siehe DrawLogPage) - hält den Bereich zwischen der Zeile, auf der die Maustaste
+    /// heruntergedrückt wurde, und der aktuell gehoverten Zeile live nach: Zeilen, die neu in den
+    /// Bereich hineinkommen, werden gemäß logDragSelectMode markiert/demarkiert; Zeilen, die beim
+    /// Zurückhovern aus dem Bereich herausfallen, werden auf ihren Zustand vor Beginn des Zugs
+    /// zurückgesetzt (Nutzeranforderung: "wenn ich wieder zurück hover sollen die Zeilen wieder
+    /// demarkiert werden"). logDragTouchedIds verfolgt, welche Zeilen dieser Zug bereits verändert hat,
+    /// damit nur diese beim Zurückhovern wieder zurückgesetzt werden und Markierungen von außerhalb
+    /// des aktuellen Zugs unberührt bleiben.
     /// </summary>
     private void ApplyLogDragSelection(int anchorRowIndex, int currentRowIndex, List<LogEntry> filteredList)
     {
         var start = Math.Min(anchorRowIndex, currentRowIndex);
         var end = Math.Max(anchorRowIndex, currentRowIndex);
+
+        var currentRangeIds = new HashSet<long>();
         for (var i = start; i <= end; i++)
-            logSelectedIds.Add(filteredList[i].Id);
+            currentRangeIds.Add(filteredList[i].Id);
+
+        foreach (var id in logDragTouchedIds.ToList())
+        {
+            if (currentRangeIds.Contains(id))
+                continue;
+
+            if (logDragSelectMode)
+                logSelectedIds.Remove(id);
+            else
+                logSelectedIds.Add(id);
+            logDragTouchedIds.Remove(id);
+        }
+
+        foreach (var id in currentRangeIds)
+        {
+            if (!logDragTouchedIds.Add(id))
+                continue;
+
+            if (logDragSelectMode)
+                logSelectedIds.Add(id);
+            else
+                logSelectedIds.Remove(id);
+        }
 
         CopySelectionIfChanged(filteredList);
     }
@@ -2351,6 +2397,7 @@ public class MainWindow : Window
                 logLastClickedRowIndex = null;
                 logDragSelecting = false;
                 logDragAnchorRowIndex = null;
+                logDragTouchedIds.Clear();
                 logLastCopiedSelectionSignature = string.Empty;
             }
         }
