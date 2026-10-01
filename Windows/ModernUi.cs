@@ -509,7 +509,9 @@ public static class ModernUi
         if (!string.IsNullOrEmpty(helpText))
             HelpIconIfHovered(rowScreenMin, new Vector2(totalAvail, rowHeight), labelMax, labelMinY, helpText);
 
-        ImGui.SetCursorPos(rowStart + new Vector2(0f, rowHeight));
+        // -1px Feinjustierung (Nutzeranforderung: Zeilenhöhe schrittweise kalibrieren, wie schon bei
+        // der Always-Up-Fish-Backup-Timer-Zeile).
+        ImGui.SetCursorPos(rowStart + new Vector2(0f, rowHeight - 1f));
         return changed;
     }
 
