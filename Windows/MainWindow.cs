@@ -840,7 +840,7 @@ public class MainWindow : Window
             Loc.T(
                 "Startet Always Up Fische nur, wenn in den nächsten X Minuten kein Prep Timer von nicht Always Up Fischen beginnt.",
                 "Only starts Always Up fish if no prep timer of a non-Always Up fish begins within the next X minutes."),
-            contentOffsetY: -4f);
+            contentOffsetY: -8f);
         var backupTimerMinutes = config.AlwaysUpFishBackupTimerMinutes;
         ImGui.SetNextItemWidth(220f);
         var backupTimerFormat = backupTimerMinutes == 0 ? Loc.T("Aus", "Off") : Loc.T("%d Min.", "%d min");
