@@ -75,6 +75,10 @@ public class MainWindow : Window
     private bool logDragSelecting;
     private int? logDragAnchorRowIndex;
 
+    // Zuletzt automatisch kopierte Auswahl (siehe CopySelectionIfChanged) - verhindert, dass während
+    // einer Ziehauswahl bei unveränderter Markierung jeden Frame erneut in die Zwischenablage kopiert wird.
+    private string logLastCopiedSelectionSignature = string.Empty;
+
     private RailPage railPage = RailPage.FishData;
     private bool collapsed;
     private bool collapsedLastFrame;
@@ -2135,8 +2139,16 @@ public class MainWindow : Window
                 };
 
                 var (source, message) = SplitLogSource(entry.Message);
+                var isSelected = logCopyModeEnabled && logSelectedIds.Contains(entry.Id);
 
                 ImGui.TableNextRow();
+
+                // Markierte Zeilen deutlich sichtbar hervorheben (Nutzeranforderung: "farblich etwas
+                // mehr herausheben") - kräftige Akzentfarbe über die ganze Zeile statt nur der dezenten
+                // Standard-Selectable-Hervorhebung.
+                if (isSelected)
+                    ImGui.TableSetBgColor(ImGuiTableBgTarget.RowBg0, ImGui.GetColorU32(new Vector4(0.25f, 0.55f, 0.95f, 0.55f)));
+
                 ImGui.TableNextColumn();
 
                 // Kopiermodus: Zeile per unsichtbarem Selectable (spannt alle Spalten) anklickbar machen -
@@ -2145,7 +2157,6 @@ public class MainWindow : Window
                 // und über mehrere Zeilen hovern (Ziehauswahl wie in einem Datei-Explorer).
                 if (logCopyModeEnabled)
                 {
-                    var isSelected = logSelectedIds.Contains(entry.Id);
                     ImGui.Selectable($"##LogRow_{entry.Id}", isSelected, ImGuiSelectableFlags.SpanAllColumns);
                     var rowHovered = ImGui.IsItemHovered();
 
@@ -2228,6 +2239,7 @@ public class MainWindow : Window
         }
 
         logLastClickedRowIndex = rowIndex;
+        CopySelectionIfChanged(filteredList);
     }
 
     /// <summary>
@@ -2244,6 +2256,27 @@ public class MainWindow : Window
         var end = Math.Max(anchorRowIndex, currentRowIndex);
         for (var i = start; i <= end; i++)
             logSelectedIds.Add(filteredList[i].Id);
+
+        CopySelectionIfChanged(filteredList);
+    }
+
+    /// <summary>
+    /// Kopiert die aktuelle Auswahl automatisch in die Zwischenablage (Nutzeranforderung: "direkt
+    /// kopieren wenn man was auswählt", statt einen eigenen "Auswahl kopieren"-Knopf zu benötigen) -
+    /// vergleicht mit der zuletzt kopierten Auswahl, damit eine Ziehauswahl nicht bei jedem Frame ohne
+    /// tatsächliche Änderung erneut in die Zwischenablage schreibt.
+    /// </summary>
+    private void CopySelectionIfChanged(List<LogEntry> filteredList)
+    {
+        if (logSelectedIds.Count == 0)
+            return;
+
+        var signature = string.Join(",", logSelectedIds.OrderBy(id => id));
+        if (signature == logLastCopiedSelectionSignature)
+            return;
+
+        logLastCopiedSelectionSignature = signature;
+        CopyLogLines(filteredList.Where(e => logSelectedIds.Contains(e.Id)));
     }
 
     /// <summary>
@@ -2257,15 +2290,13 @@ public class MainWindow : Window
         var sourceLabel = Loc.T("Quelle...", "Source...");
         var copyModeLabel = Loc.T("Kopiermodus", "Copy mode");
         var copyAllLabel = Loc.T("Alles kopieren", "Copy all");
-        var showSelectionButtons = logCopyModeEnabled && logSelectedIds.Count > 0;
-        var copySelectionLabel = showSelectionButtons
-            ? Loc.T($"Auswahl kopieren ({logSelectedIds.Count})", $"Copy selection ({logSelectedIds.Count})")
+        // Kein eigener "Auswahl kopieren"-Knopf mehr - die Auswahl wird direkt bei jeder Änderung
+        // automatisch kopiert (siehe CopySelectionIfChanged), nur "Auswahl aufheben" bleibt als Knopf.
+        var clearSelectionLabel = logCopyModeEnabled && logSelectedIds.Count > 0
+            ? Loc.T("Auswahl aufheben", "Clear selection")
             : null;
-        var clearSelectionLabel = showSelectionButtons ? Loc.T("Auswahl aufheben", "Clear selection") : null;
 
         var labels = new List<string> { sourceLabel, copyModeLabel, copyAllLabel };
-        if (copySelectionLabel != null)
-            labels.Add(copySelectionLabel);
         if (clearSelectionLabel != null)
             labels.Add(clearSelectionLabel);
 
@@ -2321,6 +2352,7 @@ public class MainWindow : Window
                 logLastClickedRowIndex = null;
                 logDragSelecting = false;
                 logDragAnchorRowIndex = null;
+                logLastCopiedSelectionSignature = string.Empty;
             }
         }
         if (logCopyModeEnabled)
@@ -2330,17 +2362,14 @@ public class MainWindow : Window
         if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
             CopyLogLines(entries);
 
-        if (copySelectionLabel != null && clearSelectionLabel != null)
+        if (clearSelectionLabel != null)
         {
-            ImGui.SameLine();
-            if (ImGui.Button(copySelectionLabel + "##LogCopySelection"))
-                CopyLogLines(entries.Where(e => logSelectedIds.Contains(e.Id)));
-
             ImGui.SameLine();
             if (ImGui.Button(clearSelectionLabel + "##LogClearSelection"))
             {
                 logSelectedIds.Clear();
                 logLastClickedRowIndex = null;
+                logLastCopiedSelectionSignature = string.Empty;
             }
         }
     }
