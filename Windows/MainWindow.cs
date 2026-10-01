@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Text;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Interface;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.ManagedFontAtlas;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
@@ -2357,6 +2358,18 @@ public class MainWindow : Window
 
         logLastCopiedSelectionSignature = signature;
         CopyLogLines(filteredList.Where(e => logSelectedIds.Contains(e.Id)));
+
+        // Dalamud-Toast unten rechts (Nutzeranforderung: "da wo auch die Dalamud Updates stehen"),
+        // damit sofort sichtbar ist, dass und wie viele Zeilen markiert/kopiert wurden.
+        Plugin.NotificationManager.AddNotification(new Notification
+        {
+            Title = Loc.T("Log", "Log"),
+            Content = logSelectedIds.Count == 1
+                ? Loc.T("1 Zeile markiert und kopiert", "1 line marked and copied")
+                : Loc.T($"{logSelectedIds.Count} Zeilen markiert und kopiert", $"{logSelectedIds.Count} lines marked and copied"),
+            Type = NotificationType.Info,
+            MinimizedText = logSelectedIds.Count.ToString(CultureInfo.InvariantCulture),
+        });
     }
 
     /// <summary>
