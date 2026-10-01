@@ -2069,6 +2069,41 @@ public class MainWindow : Window
         if (ImGui.Button(Loc.T("Leeren", "Clear") + "##ClearLog"))
             PluginLogStore.Clear();
 
+        ImGui.SameLine();
+        var sourceFilterActive = logExcludedSources.Count > 0;
+        if (sourceFilterActive)
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
+        if (ImGui.Button(Loc.T("Quelle...", "Source...") + "##LogSourceFilter"))
+            ImGui.OpenPopup("##LogSourceFilterPopup");
+        if (sourceFilterActive)
+            ImGui.PopStyleColor();
+
+        if (ImGui.BeginPopup("##LogSourceFilterPopup"))
+        {
+            if (ImGui.Button(Loc.T("Alle", "All") + "##LogSourceAll"))
+                logExcludedSources.Clear();
+            ImGui.SameLine();
+            if (ImGui.Button(Loc.T("Keine", "None") + "##LogSourceNone"))
+            {
+                logExcludedSources.Clear();
+                foreach (var source in allSources)
+                    logExcludedSources.Add(source);
+            }
+            ImGui.Separator();
+            foreach (var source in allSources)
+            {
+                var shown = !logExcludedSources.Contains(source);
+                if (ImGui.Checkbox(source + "##LogSourceCheck_" + source, ref shown))
+                {
+                    if (shown)
+                        logExcludedSources.Remove(source);
+                    else
+                        logExcludedSources.Add(source);
+                }
+            }
+            ImGui.EndPopup();
+        }
+
         ImGui.Spacing();
 
         DrawLogLevelToggle(Loc.T("Verbose", "Verbose"), LogEventLevel.Verbose, ModernUi.TextMuted);
@@ -2097,7 +2132,7 @@ public class MainWindow : Window
         // Zeilenanfang bezieht, nicht auf die aktuelle Cursor-Position.
         var logToolbarLineAvail = ImGui.GetContentRegionAvail().X;
         ImGui.TextColored(ModernUi.TextMuted, Loc.T($"{filteredList.Count} von {entries.Count} Zeilen", $"{filteredList.Count} of {entries.Count} lines"));
-        DrawLogToolbar(entries, allSources, logToolbarLineAvail);
+        DrawLogToolbar(entries, logToolbarLineAvail);
 
         // Keine vertikalen Trennlinien (nur die horizontale Linie unter der Kopfzeile, siehe
         // DrawTableHeader) - identisch zur Play-Tabelle (##PlannedFish), die ebenfalls bewusst ohne
@@ -2158,7 +2193,11 @@ public class MainWindow : Window
                 if (logCopyModeEnabled)
                 {
                     ImGui.Selectable($"##LogRow_{entry.Id}", isSelected, ImGuiSelectableFlags.SpanAllColumns);
-                    var rowHovered = ImGui.IsItemHovered();
+                    // AllowWhenBlockedByActiveItem ist nötig, da die zuerst angeklickte Zeile während
+                    // gehaltener Maustaste als "aktives" Widget gilt - ohne dieses Flag würde ImGui den
+                    // Hover-Test für alle anderen Zeilen als blockiert melden und die Ziehauswahl bliebe
+                    // auf die Startzeile beschränkt (identisches xllog-Verhalten erfordert dieses Flag).
+                    var rowHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem);
 
                     if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Left))
                     {
@@ -2275,14 +2314,14 @@ public class MainWindow : Window
     }
 
     /// <summary>
-    /// Quellen-Filter, Kopiermodus und Kopieren-Knöpfe - rechtsbündig oberhalb der Log-Tabelle
-    /// (Nutzeranforderung: "ganz rechts oberhalb der Tabelle" statt im Kasten mit Suche/Stufen).
-    /// lineAvail ist die verfügbare Breite ab Zeilenanfang (vor der links stehenden Zeilenzahl erfasst),
-    /// da sich ImGui.SameLine(offset) immer auf den Zeilenanfang bezieht.
+    /// Kopiermodus- und Kopieren-Knöpfe - rechtsbündig oberhalb der Log-Tabelle (Nutzeranforderung:
+    /// "nicht in den Kasten rein sondern ganz rechts oberhalb der Tabelle"; der Quellen-Filter sitzt
+    /// stattdessen im Kasten oben neben "Leeren", siehe DrawLogPage). lineAvail ist die verfügbare
+    /// Breite ab Zeilenanfang (vor der links stehenden Zeilenzahl erfasst), da sich ImGui.SameLine(offset)
+    /// immer auf den Zeilenanfang bezieht.
     /// </summary>
-    private void DrawLogToolbar(List<LogEntry> entries, List<string> allSources, float lineAvail)
+    private void DrawLogToolbar(List<LogEntry> entries, float lineAvail)
     {
-        var sourceLabel = Loc.T("Quelle...", "Source...");
         var copyModeLabel = Loc.T("Kopiermodus", "Copy mode");
         var copyAllLabel = Loc.T("Alles kopieren", "Copy all");
         // Kein eigener "Auswahl kopieren"-Knopf mehr - die Auswahl wird direkt bei jeder Änderung
@@ -2291,7 +2330,7 @@ public class MainWindow : Window
             ? Loc.T("Auswahl aufheben", "Clear selection")
             : null;
 
-        var labels = new List<string> { copyModeLabel, copyAllLabel, sourceLabel };
+        var labels = new List<string> { copyModeLabel, copyAllLabel };
         if (clearSelectionLabel != null)
             labels.Add(clearSelectionLabel);
 
@@ -2321,43 +2360,6 @@ public class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button(copyAllLabel + "##LogCopyAll"))
             CopyLogLines(entries);
-
-        // Quelle-Filter direkt neben "Auswahl aufheben" platziert (Nutzeranforderung: "den Source
-        // Button neben den Clear Button hinsetzen").
-        ImGui.SameLine();
-        var sourceFilterActive = logExcludedSources.Count > 0;
-        if (sourceFilterActive)
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.85f, 1f, 1f));
-        if (ImGui.Button(sourceLabel + "##LogSourceFilter"))
-            ImGui.OpenPopup("##LogSourceFilterPopup");
-        if (sourceFilterActive)
-            ImGui.PopStyleColor();
-
-        if (ImGui.BeginPopup("##LogSourceFilterPopup"))
-        {
-            if (ImGui.Button(Loc.T("Alle", "All") + "##LogSourceAll"))
-                logExcludedSources.Clear();
-            ImGui.SameLine();
-            if (ImGui.Button(Loc.T("Keine", "None") + "##LogSourceNone"))
-            {
-                logExcludedSources.Clear();
-                foreach (var source in allSources)
-                    logExcludedSources.Add(source);
-            }
-            ImGui.Separator();
-            foreach (var source in allSources)
-            {
-                var shown = !logExcludedSources.Contains(source);
-                if (ImGui.Checkbox(source + "##LogSourceCheck_" + source, ref shown))
-                {
-                    if (shown)
-                        logExcludedSources.Remove(source);
-                    else
-                        logExcludedSources.Add(source);
-                }
-            }
-            ImGui.EndPopup();
-        }
 
         if (clearSelectionLabel != null)
         {
