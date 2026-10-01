@@ -276,19 +276,25 @@ public static class ModernUi
         ImGui.Dummy(new Vector2(0f, CardTrailingGap));
     }
 
+    // Fester, gleicher Abstand ÜBER und UNTER der Trennlinie (siehe CardDivider) - per Draw-List
+    // statt ImGui.Separator() (dessen eigene Innenabstände nicht exakt symmetrisch sind), damit der
+    // Einstellungstext/Toggle/Combobox einer Zeile exakt vertikal mittig zwischen der Linie darüber
+    // und der Linie darunter sitzt (Nutzeranforderung/Screenshot).
+    private const float CardDividerPadding = 9f;
+
     /// <summary>
     /// Dünne horizontale Trennlinie ZWISCHEN mehreren Einstellungen innerhalb derselben Karte (z.B.
     /// Mount-Auswahl und Sprint-Umschalter im "Anflug"-Block) - NICHT zu verwechseln mit der Linie in
     /// SectionHeader (die trennt Titel/Hilfstext von den Karten darunter, nicht einzelne Zeilen
-    /// INNERHALB einer Karte). Spacing()+Separator()+Spacing() statt eines eigenen, breiter
-    /// bemessenen Dummy(8)+Linie+Dummy(8) (Nutzeranforderung: Zeilenhöhe in den Einstellungen
-    /// identisch zum Explorer's Codex Plugin, dessen Overlay-Karte genau dieses engere Muster nutzt).
+    /// INNERHALB einer Karte).
     /// </summary>
     public static void CardDivider()
     {
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
+        var width = ImGui.GetContentRegionAvail().X;
+        var pos = ImGui.GetCursorScreenPos();
+        var lineY = pos.Y + CardDividerPadding;
+        ImGui.GetWindowDrawList().AddLine(new Vector2(pos.X, lineY), new Vector2(pos.X + width, lineY), ImGui.GetColorU32(ImGuiCol.Separator), 1f);
+        ImGui.Dummy(new Vector2(0f, CardDividerPadding * 2f));
     }
 
     /// <summary>
