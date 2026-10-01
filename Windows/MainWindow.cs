@@ -11,6 +11,7 @@ using Dalamud.Interface.ManagedFontAtlas;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
 using Dalamud.Bindings.ImGui;
+using Serilog.Events;
 
 namespace BigFishHelper.Windows;
 
@@ -26,6 +27,7 @@ public class MainWindow : Window
         Play,
         FishData,
         Settings,
+        Log,
         Dependencies,
         About,
     }
@@ -42,6 +44,20 @@ public class MainWindow : Window
     // Suchtext je AutoHook-Preset-Dropdown (Key = Item-Id) - eigenes Suchfeld pro Fisch-Zeile, damit
     // das Tippen in einer Zeile die anderen nicht beeinflusst.
     private readonly Dictionary<uint, string> presetSearchText = new();
+
+    // Zustand der Log-Seite (siehe DrawLogPage) - Suchtext + welche Log-Stufen gerade sichtbar sind.
+    // Alle Stufen standardmäßig an, damit die Seite beim ersten Öffnen sofort alles zeigt.
+    private string logSearchText = string.Empty;
+    private readonly HashSet<LogEventLevel> logLevelFilter = new()
+    {
+        LogEventLevel.Verbose, LogEventLevel.Debug, LogEventLevel.Information,
+        LogEventLevel.Warning, LogEventLevel.Error, LogEventLevel.Fatal,
+    };
+
+    // Damit neu eintreffende Zeilen automatisch ans Ende scrollen, SOLANGE der Nutzer nicht von Hand
+    // nach oben gescrollt hat (wie bei einem Terminal/tail -f) - true, sobald die Scroll-Position beim
+    // letzten Frame nah am unteren Ende war.
+    private bool logAutoScroll = true;
 
     private RailPage railPage = RailPage.FishData;
     private bool collapsed;
@@ -304,6 +320,9 @@ public class MainWindow : Window
         if (ModernUi.RailButton(FontAwesomeIcon.Fish, railPage == RailPage.FishData, Loc.T("Fischdaten", "Fish Data")))
             railPage = RailPage.FishData;
         ImGui.Spacing();
+        if (ModernUi.RailButton(FontAwesomeIcon.Terminal, railPage == RailPage.Log, Loc.T("Log", "Log")))
+            railPage = RailPage.Log;
+        ImGui.Spacing();
         if (ModernUi.RailButton(FontAwesomeIcon.Plug, railPage == RailPage.Dependencies, Loc.T("Plugins", "Plugins"), HasMissingRequiredDependency()))
             railPage = RailPage.Dependencies;
         ImGui.Spacing();
@@ -352,6 +371,15 @@ public class MainWindow : Window
             ImGui.Spacing();
             ImGui.Indent(4f);
             DrawSettingsPage();
+            ImGui.Unindent(4f);
+            ImGui.EndChild();
+        }
+        else if (railPage == RailPage.Log)
+        {
+            ImGui.BeginChild("##LogContent", contentSize, false, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+            ImGui.Spacing();
+            ImGui.Indent(4f);
+            DrawLogPage();
             ImGui.Unindent(4f);
             ImGui.EndChild();
         }
@@ -1984,6 +2012,101 @@ public class MainWindow : Window
 
     private static bool IsPluginLoaded(string internalName) =>
         Plugin.PluginInterface.InstalledPlugins.Any(p => p.InternalName == internalName && p.IsLoaded);
+
+    /// <summary>
+    /// Eigene, auf dieses Plugin beschränkte Log-Ansicht (Nutzeranforderung: "Logs von /xllog in
+    /// meinem Plugin... nur mein Plugin betreffend... suchen und filtern") - liest aus PluginLogStore,
+    /// das PluginLogRecorder bei jedem Plugin.Log.X(...)-Aufruf zusätzlich befüllt. Rein lesend/
+    /// anzeigend, ändert nichts an /xllog selbst.
+    /// </summary>
+    private void DrawLogPage()
+    {
+        ModernUi.SectionHeader(
+            Loc.T("Log", "Log"),
+            Loc.T("Eigene Log-Zeilen dieses Plugins - durchsuchbar und nach Stufe filterbar, ohne /xllog öffnen zu müssen.",
+                "This plugin's own log lines - searchable and filterable by level, without opening /xllog."));
+
+        ModernUi.BeginCard();
+        ImGui.SetNextItemWidth(320f);
+        ImGui.InputTextWithHint("##LogSearch", Loc.T("Suchen...", "Search..."), ref logSearchText, 200);
+
+        ImGui.SameLine();
+        if (ImGui.Button(Loc.T("Leeren", "Clear") + "##ClearLog"))
+            PluginLogStore.Clear();
+
+        ImGui.Spacing();
+
+        DrawLogLevelToggle(Loc.T("Verbose", "Verbose"), LogEventLevel.Verbose, ModernUi.TextMuted);
+        ImGui.SameLine();
+        DrawLogLevelToggle(Loc.T("Debug", "Debug"), LogEventLevel.Debug, ModernUi.TextMuted);
+        ImGui.SameLine();
+        DrawLogLevelToggle(Loc.T("Info", "Info"), LogEventLevel.Information, new Vector4(0.6f, 0.85f, 1f, 1f));
+        ImGui.SameLine();
+        DrawLogLevelToggle(Loc.T("Warnung", "Warning"), LogEventLevel.Warning, new Vector4(0.95f, 0.8f, 0.3f, 1f));
+        ImGui.SameLine();
+        DrawLogLevelToggle(Loc.T("Fehler", "Error"), LogEventLevel.Error, new Vector4(0.95f, 0.35f, 0.4f, 1f));
+        ImGui.SameLine();
+        DrawLogLevelToggle(Loc.T("Kritisch", "Critical"), LogEventLevel.Fatal, new Vector4(1f, 0.2f, 0.5f, 1f));
+        ModernUi.EndCard();
+
+        var entries = PluginLogStore.Snapshot();
+        var filtered = entries.Where(e => logLevelFilter.Contains(e.Level));
+        if (!string.IsNullOrWhiteSpace(logSearchText))
+            filtered = filtered.Where(e => e.Message.Contains(logSearchText, StringComparison.OrdinalIgnoreCase));
+        var filteredList = filtered.ToList();
+
+        ImGui.TextColored(ModernUi.TextMuted, Loc.T($"{filteredList.Count} von {entries.Count} Zeilen", $"{filteredList.Count} of {entries.Count} lines"));
+
+        ImGui.BeginChild("##LogScroll", new Vector2(0f, -1f), true);
+        foreach (var entry in filteredList)
+        {
+            var color = entry.Level switch
+            {
+                LogEventLevel.Warning => new Vector4(0.95f, 0.8f, 0.3f, 1f),
+                LogEventLevel.Error => new Vector4(0.95f, 0.35f, 0.4f, 1f),
+                LogEventLevel.Fatal => new Vector4(1f, 0.2f, 0.5f, 1f),
+                LogEventLevel.Debug or LogEventLevel.Verbose => ModernUi.TextMuted,
+                _ => Vector4.One,
+            };
+
+            ImGui.PushStyleColor(ImGuiCol.Text, color);
+            ImGui.TextWrapped($"[{entry.Timestamp:HH:mm:ss}] [{LevelLabel(entry.Level)}] {entry.Message}");
+            ImGui.PopStyleColor();
+        }
+
+        // Nur ans Ende springen, solange der Nutzer schon (ungefähr) am Ende war - sonst würde
+        // manuelles Hochscrollen zum Lesen älterer Zeilen bei jeder neuen Zeile sofort wieder nach
+        // unten gerissen.
+        if (logAutoScroll)
+            ImGui.SetScrollHereY(1f);
+        logAutoScroll = ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 2f;
+
+        ImGui.EndChild();
+    }
+
+    private void DrawLogLevelToggle(string label, LogEventLevel level, Vector4 color)
+    {
+        var active = logLevelFilter.Contains(level);
+        ImGui.PushStyleColor(ImGuiCol.Text, active ? color : ModernUi.TextMuted);
+        ImGui.PushStyleColor(ImGuiCol.Button, active ? new Vector4(color.X, color.Y, color.Z, 0.25f) : new Vector4(0f, 0f, 0f, 0f));
+        if (ImGui.Button(label + "##LogLevel_" + level))
+        {
+            if (!logLevelFilter.Remove(level))
+                logLevelFilter.Add(level);
+        }
+        ImGui.PopStyleColor(2);
+    }
+
+    private static string LevelLabel(LogEventLevel level) => level switch
+    {
+        LogEventLevel.Verbose => "VRB",
+        LogEventLevel.Debug => "DBG",
+        LogEventLevel.Information => "INF",
+        LogEventLevel.Warning => "WRN",
+        LogEventLevel.Error => "ERR",
+        LogEventLevel.Fatal => "CRT",
+        _ => "???",
+    };
 
     private static void DrawDependenciesPage()
     {
