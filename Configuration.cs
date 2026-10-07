@@ -4,10 +4,23 @@ using Dalamud.Configuration;
 
 namespace BigFishHelper;
 
+// Siehe Configuration.MenuLanguage/Loc-Klassenkommentar - erzwingt Deutsch/Englisch NUR fürs
+// (Ocean-)Menü, nicht fürs restliche Plugin (folgt sonst immer der Spielsprache) - 1:1 wie
+// TheExplorersCodex.MenuLanguage/Configuration.MenuLanguage.
+public enum MenuLanguage
+{
+    German,
+    English,
+}
+
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 0;
+
+    // Einstellungen -> Allgemein -> Sprache (Ocean-Menü) - Default folgt der Spielsprache.
+    public MenuLanguage MenuLanguage { get; set; } =
+        Plugin.ClientState.ClientLanguage == Dalamud.Game.ClientLanguage.German ? MenuLanguage.German : MenuLanguage.English;
 
     // Mount zum Fliegen (Lumina-Mount-RowId) - 0 = Mount Roulette.
     public uint FlyingMountId { get; set; } = 0;
@@ -18,6 +31,10 @@ public class Configuration : IPluginConfiguration
 
     // Öffnet beim Klick auf "Start" automatisch das kleine Status-Overlay (siehe StatusOverlayWindow).
     public bool ShowOverlayOnStart { get; set; } = false;
+
+    // Status-Overlay: Hintergrund-Deckkraft (0.40-1.00) und ob es gerade eingeklappt (Kompaktmodus) ist.
+    public float OverlayOpacity { get; set; } = 0.94f;
+    public bool OverlayCompact { get; set; } = false;
 
     // Timer-Seite: bereits gefangene Big Fish ausblenden.
     public bool HideCaughtFish { get; set; } = true;
@@ -59,6 +76,10 @@ public class Configuration : IPluginConfiguration
     // FishingAutomation.UpdateSwitchingJobFirst. -1 = noch keins ausgewählt (Start-Knopf bleibt dann
     // deaktiviert, siehe MainWindow).
     public int FisherGearsetIndex { get; set; } = -1;
+
+    // Höchste Version, deren Änderungsprotokoll-Eintrag der Nutzer bereits auf der Changelog-Seite
+    // gesehen hat (siehe ChangelogService.HasUnseenChangelog) - steuert das "NEU"-Badge im Ocean-Menü.
+    public string? LastSeenChangelogVersion { get; set; }
 
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }

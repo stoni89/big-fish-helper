@@ -1,0 +1,21 @@
+[
+  {
+    "version": "1.6.0",
+    "date": "2026-10-07",
+    "title": "Overlay & Fish Data Redesign",
+    "title_de": "Overlay- & Fischdaten-Neugestaltung",
+    "changes": [
+      { "type": "new", "text": "Overlay redesigned.", "text_de": "Overlay wurde neu gestaltet." },
+      { "type": "new", "text": "Fish Data redesigned.", "text_de": "Fish Data wurde neu gestaltet." }
+    ]
+  },
+  {
+    "version": "1.5.0",
+    "date": "2026-10-07",
+    "title": "Complete UI Overhaul",
+    "title_de": "Komplette Überarbeitung der Oberfläche",
+    "changes": [
+      { "type": "new", "text": "Complete UI Overhaul.", "text_de": "Komplette Überarbeitung der Benutzeroberfläche." }
+    ]
+  }
+]
