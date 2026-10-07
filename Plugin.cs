@@ -39,7 +39,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public readonly WindowSystem WindowSystem = new("BigFishHelper");
 
-    private MainWindow MainWindow { get; }
+    internal OceanMainWindow OceanMainWindow { get; }
 
     public StatusOverlayWindow StatusOverlayWindow { get; }
 
@@ -52,8 +52,21 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         Automation = new FishingAutomation(this);
-        MainWindow = new MainWindow(this);
-        WindowSystem.AddWindow(MainWindow);
+
+        PluginUiKit.UiFonts.Initialize(PluginInterface, Log);
+        PluginUiKit.UiTheme.Active = PluginUiKit.UiTheme.Ocean;
+
+        // Alle Font-Handles von Ocean-Menü und Status-Overlay schon jetzt anstoßen, nicht erst beim
+        // ersten Zeichnen der jeweiligen Seite (Nutzer-Report: falsche Schrift/falsch berechnete
+        // Positionen beim allerersten Öffnen - 1:1 dasselbe Muster wie CodexTheme.PreloadFonts in
+        // TheExplorersCodex, siehe dortiges Plugin.cs).
+        // Vollqualifiziert, da "OceanMainWindow"/"StatusOverlayWindow" als einfache Bezeichner hier
+        // mit den gleichnamigen Properties dieser Klasse kollidieren würden.
+        global::BigFishHelper.Windows.OceanMainWindow.PreloadFonts();
+        global::BigFishHelper.Windows.StatusOverlayWindow.PreloadFonts();
+
+        OceanMainWindow = new OceanMainWindow(this);
+        WindowSystem.AddWindow(OceanMainWindow);
 
         StatusOverlayWindow = new StatusOverlayWindow(this);
         WindowSystem.AddWindow(StatusOverlayWindow);
@@ -72,7 +85,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DrawUI() => WindowSystem.Draw();
 
-    public void ToggleMainUI() => MainWindow.Toggle();
+    public void ToggleMainUI() => OceanMainWindow.Toggle();
 
     public void Dispose()
     {
@@ -81,7 +94,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleMainUI;
 
         WindowSystem.RemoveAllWindows();
-        MainWindow.Dispose();
+        OceanMainWindow.Dispose();
         StatusOverlayWindow.Dispose();
         Automation.Dispose();
         CommandManager.RemoveHandler(CommandName);

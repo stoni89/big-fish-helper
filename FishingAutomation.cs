@@ -38,6 +38,33 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         Desynthesizing,
     }
 
+    /// <summary>Grobe, öffentliche Phase für die UI (Status-Overlay/Menü) - gröbere Sicht auf den privaten
+    /// "State" (dessen viele Reise-Teilschritte nach außen nicht interessieren). Siehe <see cref="ToPhase"/>
+    /// für die genaue Zuordnung.</summary>
+    public enum Phase
+    {
+        Waiting,
+        Flying,
+        Prep,
+        Fishing,
+    }
+
+    /// <summary>Zuordnung des internen "State" auf die vier UI-Phasen Wait/Fly/Prep/Fish - Reise-Teilschritte
+    /// (Teleport/Lifestream/Mount/Landung/Positionierung/...) zählen als "Flying", das Umschalten auf
+    /// Fischer + AutoHook-Start nach der Ankunft als "Prep" (wartet dort auf den Fensterbeginn),
+    /// Test-Tour/Desynthese fallen auf "Waiting" zurück (keine eigene UI-Phase dafür vorgesehen).</summary>
+    private static Phase ToPhase(State s) => s switch
+    {
+        State.Fishing => Phase.Fishing,
+        State.SwitchingJob or State.StartingAutoHook => Phase.Prep,
+        State.SwitchingJobFirst or State.SpecialRoute or State.Teleporting or State.WaitingForZone
+            or State.LifestreamMoving or State.Mounting or State.Flying or State.Landing or State.ExactPositioning => Phase.Flying,
+        _ => Phase.Waiting,
+    };
+
+    /// <summary>Aktuelle UI-Phase - nur sinnvoll, während <see cref="IsRunning"/> true ist.</summary>
+    public Phase CurrentPhase => ToPhase(state);
+
     // Siehe UpdateDesynthesizing - Teilschritte EINES Fisch-Stacks: erst per AgentSalvage.SalvageItem
     // im SalvageDialog auswählen, dann die "Desynthesize entire stack"-Checkbox anhaken (Nutzer-
     // Report/Screenshot: ohne sie blieb das Fenster nach dem Öffnen einfach untätig stehen, statt
@@ -69,6 +96,10 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // "Fliege zum Fisch" mit mehreren gespeicherten Spots (siehe StartTest/testTourPositions): so
     // lange wird an jedem einzelnen Spot gewartet, bevor es zum nächsten weitergeht (Nutzeranforderung).
     private static readonly TimeSpan TestTourWaitDuration = TimeSpan.FromSeconds(3);
+    // Nutzeranforderung: Fallback, falls AutoHook an einer Angel-Position einfach nicht anfängt zu
+    // angeln (z.B. falsche Blickrichtung/Mesh-Problem genau an dieser Stelle) - siehe UpdateFishing/
+    // TryAlternateFishingPosition.
+    private static readonly TimeSpan FishingStartTimeout = TimeSpan.FromSeconds(5);
 
     // Einstellungen -> Allgemein -> "Desynthesis nach dem Angeln" (Nutzeranforderung) - der feste,
     // in der Beschreibung genannte Wert "kein Prep Timer in den nächsten 10 Minuten".
@@ -228,6 +259,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     private bool hasSeenPathRunning;
     private bool autoHookEnabledByUs;
     private DateTime lastQuitAt = DateTime.MinValue;
+    // Siehe UpdateFishing/TryAlternateFishingPosition - sticky, sobald einmal tatsächlich geangelt
+    // wurde (ConditionFlag.Fishing/Casting), wird der 5s-Fallback für DIESEN Angelversuch nie wieder
+    // geprüft (eine spätere kurze Pause zwischen zwei AutoHook-Würfen soll nicht fälschlich als
+    // "nicht gestartet" gewertet werden). Zurückgesetzt bei jedem neuen Angelversuch (UpdateStartingAutoHook).
+    private bool everSeenFishingThisAttempt;
 
     // Siehe UpdateDesynthesizing - null, solange nicht gerade desynthetisiert wird. Enthält die noch
     // abzuarbeitenden Fisch-Item-IDs (ein Eintrag je gefundenem Stack im Hauptinventar).
@@ -280,6 +316,12 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     public bool IsRunning { get; private set; }
 
     public string StatusText { get; private set; } = string.Empty;
+
+    /// <summary>Anzahl seit dem letzten Start() tatsächlich gefangener Big Fish (per Chat-Erkennung in
+    /// OnChatMessage, siehe dort) - nur für die Overlay-Anzeige, nicht persistiert. AutoHook selbst
+    /// meldet keine Wurf-/Hak-Ereignisse per IPC an dieses Plugin, daher gibt es (bewusst) keine
+    /// Casts/Hooks-Zähler - nur die tatsächlich bestätigten Fänge sind von hier aus zuverlässig zählbar.</summary>
+    public int SessionCaught { get; private set; }
 
     public FishingAutomation(Plugin plugin)
     {
@@ -358,12 +400,42 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
             // Falls die Automation GENAU diesen Fisch gerade anfliegt/beangelt - nicht weiter
             // verfolgen, sofort zum nächsten Fisch übergehen.
             if (target != null && target.ItemId == item.ItemId && state != State.Waiting && !IsTest)
+            {
+                SessionCaught++;
                 Finish(Loc.T($"{FishName(target)} gefangen!", $"{FishName(target)} caught!"));
+            }
         }
     }
 
     /// <summary>Ob mindestens ein Fisch in den Fischdaten angehakt ist (Voraussetzung für Play/Start).</summary>
     public bool HasEnabledFish => plugin.Configuration.EnabledFish.Count > 0;
+
+    /// <summary>Anzeige-Grund für den "Achtung"-Zustand im Status-Overlay (Nutzeranforderung Abschnitt 3/5:
+    /// "Probleme werden direkt angezeigt statt nur im Chat") - rein lesend, pausiert die Automatik NICHT
+    /// selbst (die läuft unverändert weiter bzw. versucht es weiter wie bisher) und wird daher NICHT
+    /// zwischengespeichert, sondern bei jedem Aufruf neu ermittelt. Null = kein Problem erkannt.</summary>
+    public string? GetAttentionReason()
+    {
+        if (!IsRunning)
+            return null;
+
+        if (plugin.Configuration.FisherGearsetIndex < 0)
+            return Loc.T("Kein Fischer-Preset ausgewählt (siehe Allgemein).", "No Fisher gearset selected (see General).");
+        if (!GameActions.IsGearsetFisher(plugin.Configuration.FisherGearsetIndex))
+            return Loc.T("Das ausgewählte Preset ist kein Fischer (siehe Allgemein).", "The selected gearset isn't a Fisher (see General).");
+
+        if (target != null && state is State.SwitchingJob or State.StartingAutoHook or State.Fishing)
+        {
+            var preset = plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(target.ItemId);
+            if (string.IsNullOrEmpty(preset))
+                return Loc.T($"Kein AutoHook-Preset für {FishName(target)} hinterlegt.", $"No AutoHook preset set for {FishName(target)}.");
+
+            if (target.BaitIds.Length > 0 && !target.BaitIds.Any(baitId => GameActions.GetInventoryItemCount(baitId) > 0))
+                return Loc.T($"Kein Köder für {FishName(target)} im Inventar.", $"Out of bait for {FishName(target)}.");
+        }
+
+        return null;
+    }
 
     public void Start()
     {
@@ -373,6 +445,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         IsRunning = true;
         target = null;
         targetPosition = null;
+        SessionCaught = 0;
         SetState(State.Waiting);
         StatusText = Loc.T("Gestartet...", "Started...");
         Plugin.Log.Info("[FishingAutomation] Gestartet.");
@@ -380,6 +453,11 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
 
     /// <summary>Welcher Fisch gerade per "Fliege zum Fisch"-Knopf angeflogen wird (null = keiner).</summary>
     public BigFish? TestTarget => IsTest ? target : null;
+
+    /// <summary>Der Fisch, den die ECHTE Automatik (nicht "Fliege zum Fisch") gerade verfolgt - null,
+    /// solange sie nur wartet oder im Testmodus läuft. Für die Status-Overlay-Anzeige (Fischzeile,
+    /// Köder-/AutoHook-Prüfung in GetAttentionReason).</summary>
+    public BigFish? CurrentTarget => !IsTest ? target : null;
 
     // "Fliege zum Fisch": nur zur Angel-Position fliegen, landen, zum Wasser drehen - ohne
     // Wartezeit, Fenster-Prüfung und ohne AutoHook.
@@ -1597,6 +1675,7 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         // der Knopf in AutoHook: FishManager.StartFishing, per Befehl "/ahstart").
         PressAutoHookStartActions();
 
+        everSeenFishingThisAttempt = false;
         SetState(State.Fishing);
         lastActionAt = now; // nach SetState - sonst würde sofort erneut ausgelöst
     }
@@ -1607,10 +1686,72 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
     // "[AutoHook] You can't cast right now"-Spam im Chat).
     private void UpdateFishing(DateTime now)
     {
+        if (!everSeenFishingThisAttempt)
+        {
+            if (Plugin.Condition[ConditionFlag.Fishing] || Plugin.Condition[ConditionFlag.Casting])
+            {
+                everSeenFishingThisAttempt = true;
+            }
+            else if (now - stateEnteredAt > FishingStartTimeout)
+            {
+                TryAlternateFishingPosition();
+                return;
+            }
+        }
+
         var remaining = now < targetWindow.StartUtc
             ? Loc.T($"Fenster in {FormatSpan(targetWindow.StartUtc - now)}", $"window in {FormatSpan(targetWindow.StartUtc - now)}")
             : Loc.T($"noch {FormatSpan(targetWindow.EndUtc - now)}", $"{FormatSpan(targetWindow.EndUtc - now)} left");
         StatusText = Loc.T($"Angle auf {FishName(target!)} ({remaining})", $"Fishing for {FishName(target!)} ({remaining})");
+    }
+
+    /// <summary>Nutzeranforderung: Fällt AutoHook 5s nach Angelstart nicht in Gang (z.B. falsche
+    /// Blickrichtung/Mesh-Problem genau an dieser Stelle), eine ANDERE gespeicherte Angel-Position
+    /// dieses Fischs ausprobieren - zyklisch, bis es klappt oder nur eine einzige Position bekannt ist
+    /// (dann einfach an derselben Stelle neu ansetzen). Läuft über State.ExactPositioning erneut an
+    /// (schon im richtigen Gebiet, daher kein erneuter Teleport/Ätherit-Flug nötig).</summary>
+    private void TryAlternateFishingPosition()
+    {
+        if (target == null)
+            return;
+
+        DisableAutoHook();
+        GameActions.QuitFishing();
+
+        var spots = FishingPositionStore.GetAll(target.ItemId);
+        if (spots.Count <= 1)
+        {
+            Plugin.Log.Info($"[FishingAutomation] {FishName(target)}: Angeln nach {FishingStartTimeout.TotalSeconds:F0}s nicht gestartet, aber nur eine Angel-Position bekannt - neuer Versuch an derselben Stelle.");
+            StatusText = Loc.T("Angeln nicht gestartet - neuer Versuch...", "Fishing didn't start - retrying...");
+        }
+        else
+        {
+            var currentIndex = -1;
+            if (targetPosition is { } current)
+            {
+                for (var i = 0; i < spots.Count; i++)
+                {
+                    if (Vector3.Distance(new Vector3(spots[i].X, spots[i].Y, spots[i].Z), current.Position) < 0.1f)
+                    {
+                        currentIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            var nextIndex = (currentIndex + 1) % spots.Count;
+            var next = spots[nextIndex];
+            targetPosition = new FishingPosition(new Vector3(next.X, next.Y, next.Z), next.Facing);
+            destination = targetPosition.Value.Position;
+            destinationFacing = targetPosition.Value.Facing;
+
+            Plugin.Log.Info($"[FishingAutomation] {FishName(target)}: Angeln nach {FishingStartTimeout.TotalSeconds:F0}s nicht gestartet - wechsle zu Angel-Position {nextIndex + 1}/{spots.Count}.");
+            StatusText = Loc.T($"Angeln nicht gestartet - wechsle Angel-Position ({nextIndex + 1}/{spots.Count})...", $"Fishing didn't start - switching fishing position ({nextIndex + 1}/{spots.Count})...");
+        }
+
+        lastActionAt = DateTime.MinValue;
+        exactPositionAttempts = 0;
+        SetState(State.ExactPositioning);
     }
 
     private static void PressAutoHookStartActions()

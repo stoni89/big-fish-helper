@@ -1,6 +1,6 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.4.0.0</Version>
+    <Version>1.6.0.0</Version>
     <!-- Manifest-Felder (siehe https://github.com/goatcorp/DalamudPackager) -->
     <Author>Stoni</Author>
     <Name>Big Fish Helper</Name>
@@ -16,9 +16,23 @@
     <None Include="Data\icon.png" CopyToOutputDirectory="PreserveNewest" />
     <!-- Angel-Positionen aller Big Fish - wird mit ausgeliefert (siehe FishingPositionStore). -->
     <None Include="Data\FishingPositions.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Änderungsprotokoll-Einträge für die Changelog-Seite (siehe ChangelogService). -->
+    <None Include="Data\Changelog.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Eigene Kopien der PluginUiKit-Schriften - UiFonts.FontPath löst relativ zum AssemblyLocation
+         DES AUFRUFENDEN Plugins auf, jedes Plugin braucht daher seine eigenen .ttf-Dateien. -->
+    <None Include="Data\Fonts\Cinzel.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\Cinzel-Bold.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\AlegreyaItalic.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\AlegreyaSans-Regular.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\AlegreyaSans-Medium.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\AlegreyaSans-Bold.ttf" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\OFL-Cinzel.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\OFL-AlegreyaSans.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\Fonts\OFL-Alegreya.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ECommons" Version="3.2.1.21" />
+    <ProjectReference Include="..\PluginUiKit\PluginUiKit.csproj" />
   </ItemGroup>
 </Project>
