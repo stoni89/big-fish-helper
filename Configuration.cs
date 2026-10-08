@@ -81,5 +81,9 @@ public class Configuration : IPluginConfiguration
     // gesehen hat (siehe ChangelogService.HasUnseenChangelog) - steuert das "NEU"-Badge im Ocean-Menü.
     public string? LastSeenChangelogVersion { get; set; }
 
+    // Eingeklappter Zustand von Windows.OceanMainWindow (1:1 wie TheExplorersCodex.Configuration.
+    // MenuWindowCollapsed) - true = nur die Mini-Leiste (Logo + Seitenname) statt Seitenleiste/Inhalt.
+    public bool MenuWindowCollapsed { get; set; }
+
     public void Save() => Plugin.PluginInterface.SavePluginConfig(this);
 }
