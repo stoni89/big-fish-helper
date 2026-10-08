@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.7.0",
+    "date": "2026-10-08",
+    "title": "Collapsible Menu",
+    "title_de": "Einklappbares Menü",
+    "changes": [
+      { "type": "new", "text": "The menu can now be collapsed and expanded.", "text_de": "Das Menü kann jetzt auf- und zugeklappt werden." }
+    ]
+  },
+  {
     "version": "1.6.0",
     "date": "2026-10-07",
     "title": "Overlay & Fish Data Redesign",
