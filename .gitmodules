@@ -1,0 +1,3 @@
+[submodule "external/PluginUiKit"]
+	path = external/PluginUiKit
+	url = https://github.com/stoni89/plugin-ui-kit.git

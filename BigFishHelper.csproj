@@ -32,7 +32,24 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Das Submodule unter external/PluginUiKit ist ein EIGENES Projekt (siehe ProjectReference
+         weiter unten), kein Teil dieses Projekts - ohne diesen Ausschluss greift der SDK-Standard-
+         Glob "**/*.cs" trotzdem zu, da das Submodule INNERHALB dieses Projektordners liegt, und
+         kompiliert jede Datei doppelt (einmal direkt hier, einmal über die referenzierte
+         PluginUiKit.dll) - "conflicts with the imported type"-Warnungen plus Duplicate-Attribute-
+         Fehler aus den doppelten obj/-Dateien (1:1 derselbe Fix wie TheExplorersCodex.csproj). -->
+    <Compile Remove="external\**\*.cs" />
+    <None Remove="external\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ECommons" Version="3.2.1.21" />
-    <ProjectReference Include="..\PluginUiKit\PluginUiKit.csproj" />
+    <!-- Eigenes Repo (github.com/stoni89/plugin-ui-kit, auch von TheExplorersCodex genutzt), hier als
+         Git-Submodule eingebunden (siehe .gitmodules) statt eines Sibling-Ordners außerhalb dieses
+         Repos - ein Projektverweis nach "..\" liegt außerhalb des Checkouts und war in GitHub Actions
+         nicht auflösbar (Build schlug dort fehl, lokal unbemerkt, da der Sibling-Ordner dort
+         existierte). .github/workflows/release.yml checkt das Submodule deshalb jetzt mit aus
+         (submodules: true). -->
+    <ProjectReference Include="external\PluginUiKit\PluginUiKit.csproj" />
   </ItemGroup>
 </Project>

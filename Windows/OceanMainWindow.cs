@@ -58,6 +58,12 @@ public sealed class OceanMainWindow : Window, IDisposable
     private static IFontHandle BrandSmallFont => brandSmallFont ??= UiFonts.BuildHandle("Cinzel.ttf", 15f); // = CodexTheme.FontSidebarBrandSmall
     private static IFontHandle? brandLargeFont;
     private static IFontHandle BrandLargeFont => brandLargeFont ??= UiFonts.BuildHandle("Cinzel-Bold.ttf", 26f); // = CodexTheme.FontSidebarBrandLarge
+    private static IFontHandle? collapsedBrandSmallFont;
+    private static IFontHandle CollapsedBrandSmallFont => collapsedBrandSmallFont ??= UiFonts.BuildHandle("Cinzel.ttf", 10f); // = CodexTheme.FontCollapsedBrandSmall
+    private static IFontHandle? collapsedBrandLargeFont;
+    private static IFontHandle CollapsedBrandLargeFont => collapsedBrandLargeFont ??= UiFonts.BuildHandle("Cinzel-Bold.ttf", 19f); // = CodexTheme.FontCollapsedBrandLarge
+    private static IFontHandle? collapsedPageLabelFont;
+    private static IFontHandle CollapsedPageLabelFont => collapsedPageLabelFont ??= UiFonts.BuildHandle("AlegreyaSans-Medium.ttf", 13f); // = CodexTheme.FontCollapsedPageLabel
     private static IFontHandle? bodySmallFont;
     private static IFontHandle BodySmallFont => bodySmallFont ??= UiFonts.BuildHandle("AlegreyaSans-Regular.ttf", 14f); // = CodexTheme.FontBodySmall (Versionstext)
     private static IFontHandle? bodyBoldFont;
@@ -224,6 +230,9 @@ public sealed class OceanMainWindow : Window, IDisposable
         _ = BodySmallFont;
         _ = BrandLargeFont;
         _ = BrandSmallFont;
+        _ = CollapsedBrandSmallFont;
+        _ = CollapsedBrandLargeFont;
+        _ = CollapsedPageLabelFont;
         _ = ChangelogChangeTextFont;
         _ = ChangelogCollapsedTitleFont;
         _ = ChangelogMetaFont;
@@ -360,10 +369,17 @@ public sealed class OceanMainWindow : Window, IDisposable
     // Codex Menü") - 1247x850, kein Resize.
     private const ImGuiWindowFlags BaseFlags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoResize;
 
+    private static readonly Vector2 ExpandedWindowSize = new(1247f, 850f);
+
+    // Eingeklappt/ausgeklappt (1:1 wie TheExplorersCodex.CodexMenuWindow - eigene Einklappen/
+    // Schließen-Knöpfe statt der nativen ImGui-Titelleiste, siehe PluginUiKit.UiWindowControls) -
+    // aus der Configuration vorbelegt, damit der Zustand einen Neustart übersteht.
+    private bool collapsed;
+
     public OceanMainWindow(Plugin plugin) : base("##BigFishHelperOceanMenu", BaseFlags)
     {
         this.plugin = plugin;
-        Size = new Vector2(1247f, 850f);
+        collapsed = plugin.Configuration.MenuWindowCollapsed;
         SizeCondition = ImGuiCond.Always;
     }
 
@@ -377,6 +393,12 @@ public sealed class OceanMainWindow : Window, IDisposable
         ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1f);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, UiMetrics.WindowRadius);
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, Vector2.Zero);
+
+        // Eingeklappt: Fenster schrumpft auf die Mini-Leiste, Position oben links bleibt unverändert
+        // (1:1 wie CodexMenuWindow.PreDraw).
+        Size = collapsed
+            ? new Vector2(UiWindowControls.CollapsedWidth, UiWindowControls.CollapsedHeight)
+            : ExpandedWindowSize;
     }
 
     public override void PostDraw()
@@ -395,7 +417,10 @@ public sealed class OceanMainWindow : Window, IDisposable
         Loc.MenuLanguageOverride = config.MenuLanguage == MenuLanguage.German;
         try
         {
-            DrawInner();
+            if (collapsed)
+                DrawCollapsedInner();
+            else
+                DrawInner();
         }
         finally
         {
@@ -409,7 +434,7 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         DrawSidebar(scale);
         ImGui.SameLine(0f, 0f);
-        DrawContent(scale);
+        var controls = DrawContent(scale);
 
         // Dünne Trennlinie zwischen Seitenleiste und Inhalt, über die volle Fensterhöhe (1:1 wie
         // CodexMenuWindow.DrawInner - auf dem Fenster-eigenen Layer, nicht in einem der Childs).
@@ -421,7 +446,123 @@ public sealed class OceanMainWindow : Window, IDisposable
             ImGui.GetColorU32(UiTheme.Active.LineCard));
 
         UiWidgets.DrawWindowCorners(Ornaments, UiMetrics.CornerInsetMenu * scale);
+
+        if (controls.ToggleCollapse)
+        {
+            collapsed = true;
+            plugin.Configuration.MenuWindowCollapsed = true;
+            plugin.Configuration.Save();
+        }
+        if (controls.Close)
+            IsOpen = false;
     }
+
+    /// <summary>Eingeklappter Zustand - Mini-Leiste statt Seitenleiste/Inhalt: Hintergrund/Eckverzierungen,
+    /// Logo+Seitenname links, Ausklappen/Schließen rechts - 1:1 wie CodexMenuWindow.DrawCollapsedInner.</summary>
+    private void DrawCollapsedInner()
+    {
+        var scale = ImGuiHelpers.GlobalScale;
+        var windowPos = ImGui.GetWindowPos();
+        var windowSize = ImGui.GetWindowSize();
+
+        UiWindowControls.DrawChrome(scale, Ornaments, UiMetrics.CornerInsetMenu * scale, UiMetrics.WindowRadius);
+
+        var centerY = windowPos.Y + windowSize.Y / 2f;
+        var rightEdge = windowPos.X + windowSize.X - 18f * scale;
+
+        var controls = UiWindowControls.DrawCollapsedButtons(scale, rightEdge, centerY,
+            expandTooltip: Loc.T("Ausklappen", "Expand"), closeTooltip: Loc.T("Schließen", "Close"));
+
+        var brandAreaMin = windowPos + new Vector2(18f * scale, 0f);
+        var brandClicked = DrawCollapsedBrandAndLabel(scale, brandAreaMin, windowSize.Y, out var brandAreaMaxX);
+
+        var dragAreaMin = new Vector2(brandAreaMaxX, windowPos.Y);
+        var dragAreaMax = new Vector2(rightEdge - UiWindowControls.IconButtonSize * scale * 2f - 20f * scale, windowPos.Y + windowSize.Y);
+        var dragDoubleClicked = UiWindowControls.DrawDragArea("##OceanMenuCollapsedDrag", dragAreaMin, dragAreaMax);
+
+        if (controls.ToggleCollapse || brandClicked || dragDoubleClicked)
+        {
+            collapsed = false;
+            plugin.Configuration.MenuWindowCollapsed = false;
+            plugin.Configuration.Save();
+        }
+        if (controls.Close)
+            IsOpen = false;
+    }
+
+    /// <summary>Logo (Fisch-Symbol, 36px) + "BIG FISH"/"Helper" + " · {Seitenname}" der Mini-Leiste - klickbar
+    /// (gibt true bei Klick zurück), vertikal mittig über "barHeight" - 1:1 wie CodexMenuWindow.
+    /// DrawCollapsedBrandAndLabel. "brandAreaMaxX" (out) ist die Bildschirm-X direkt hinter dem
+    /// gezeichneten Inhalt, für die freie Zieh-/Doppelklickfläche danach.</summary>
+    private bool DrawCollapsedBrandAndLabel(float scale, Vector2 areaMin, float barHeight, out float brandAreaMaxX)
+    {
+        var T = UiTheme.Active;
+        var iconSize = 36f * scale;
+        var iconCursor = new Vector2(areaMin.X, areaMin.Y + (barHeight - iconSize) / 2f);
+        ImGui.SetCursorScreenPos(iconCursor + new Vector2(2f * scale, 2f * scale));
+        Ornaments.DrawSidebarLogo(iconSize - 4f * scale);
+
+        var drawList = ImGui.GetWindowDrawList();
+        var textX = iconCursor.X + iconSize + 10f * scale;
+
+        float smallHeight, largeHeight;
+        using (CollapsedBrandSmallFont.Push())
+            smallHeight = ImGui.GetFontSize();
+        using (CollapsedBrandLargeFont.Push())
+            largeHeight = ImGui.GetFontSize();
+
+        var startY = iconCursor.Y + (iconSize - (smallHeight + largeHeight)) / 2f;
+
+        using (CollapsedBrandSmallFont.Push())
+            drawList.AddText(new Vector2(textX, startY), ImGui.GetColorU32(T.TextSecondary), "BIG FISH");
+
+        var brandText = Loc.T("Helfer", "Helper");
+        var brandY = startY + smallHeight;
+        float brandWidth;
+        using (CollapsedBrandLargeFont.Push())
+        {
+            brandWidth = ImGui.CalcTextSize(brandText).X;
+            drawList.AddText(new Vector2(textX, brandY), ImGui.GetColorU32(T.TextHeading), brandText);
+        }
+
+        var pageLabel = " · " + GetPageTitle(currentPage);
+        float pageLabelWidth, pageLabelHeight;
+        using (CollapsedPageLabelFont.Push())
+        {
+            var size = ImGui.CalcTextSize(pageLabel);
+            pageLabelWidth = size.X;
+            pageLabelHeight = size.Y;
+        }
+        var pageLabelX = textX + brandWidth;
+        var pageLabelY = brandY + (largeHeight - pageLabelHeight) / 2f;
+        using (CollapsedPageLabelFont.Push())
+            drawList.AddText(new Vector2(pageLabelX, pageLabelY), ImGui.GetColorU32(T.TextMuted), pageLabel);
+
+        brandAreaMaxX = pageLabelX + pageLabelWidth + 14f * scale;
+
+        var clickAreaMax = new Vector2(brandAreaMaxX, areaMin.Y + barHeight);
+        ImGui.SetCursorScreenPos(areaMin);
+        var clicked = ImGui.InvisibleButton("##OceanMenuCollapsedBrand", clickAreaMax - areaMin);
+        if (ImGui.IsItemHovered())
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+
+        return clicked;
+    }
+
+    /// <summary>Anzeigename je Seite - 1:1 dieselben Strings wie im Seitenkopf-Switch (DrawContent) bzw. den
+    /// Nav-Punkt-Labels (DrawSidebar), hier zusätzlich auch für About/Fischdaten (die ihren Seitenkopf
+    /// selbst zeichnen) - für die eingeklappte Mini-Leiste, die den Seitennamen unabhängig davon zeigt.</summary>
+    private static string GetPageTitle(AppPage page) => page switch
+    {
+        AppPage.Start => Loc.T("Start", "Start"),
+        AppPage.BigFish => Loc.T("Fischdaten", "Fish Data"),
+        AppPage.Plugins => Loc.T("Plugins", "Plugins"),
+        AppPage.Debug => Loc.T("Debug", "Debug"),
+        AppPage.Log => Loc.T("Log", "Log"),
+        AppPage.Changelog => Loc.T("Änderungsprotokoll", "Changelog"),
+        AppPage.About => Loc.T("Über", "About"),
+        _ => Loc.T("Allgemein", "General"),
+    };
 
     /// <summary>Seitenleiste: Logo, EINE Gruppe ("SETTINGS") mit EINEM Eintrag ("Allgemein"), Schließen-Knopf unten - 1:1 wie CodexMenuWindow.DrawSidebar, nur ohne die übrigen (noch nicht gebauten) Seiten.</summary>
     private void DrawSidebar(float scale)
@@ -460,8 +601,6 @@ public sealed class OceanMainWindow : Window, IDisposable
         DrawNavItem(scale, AppPage.Log, UiIcon.Console, Loc.T("Log", "Log"));
         DrawNavItem(scale, AppPage.Changelog, FontAwesomeIcon.FileAlt, Loc.T("Änderungen", "Changelog"), showNewBadge: ChangelogService.HasUnseenChangelog(plugin.Configuration));
         DrawNavItem(scale, AppPage.About, FontAwesomeIcon.InfoCircle, Loc.T("Über", "About"));
-
-        DrawSidebarCloseButton(scale);
 
         ImGui.Unindent(18f * scale);
         ImGui.EndChild();
@@ -634,20 +773,9 @@ public sealed class OceanMainWindow : Window, IDisposable
             currentPage = page;
     }
 
-    /// <summary>"Schließen"-Knopf ganz unten in der Seitenleiste - 1:1 wie CodexMenuWindow.DrawSidebarCloseButton.</summary>
-    private void DrawSidebarCloseButton(float scale)
-    {
-        var width = ImGui.GetContentRegionAvail().X - 18f * scale;
-        var height = 30f * scale;
-        var bottomMargin = 20f * scale;
-
-        ImGui.SetCursorPosY(ImGui.GetWindowHeight() - height - bottomMargin);
-        if (UiNav.AccentButton(Loc.T("Schließen", "Close"), new Vector2(width, height), scale, BodyBoldFont))
-            IsOpen = false;
-    }
-
-    /// <summary>Inhaltsbereich: Seitenkopf (Titel/Untertitel/Trenn-Ornament) + jeweilige Seite - 1:1 wie CodexMenuWindow.DrawContent (About hat bewusst KEINEN gemeinsamen Seitenkopf, siehe dortigen Kommentar).</summary>
-    private void DrawContent(float scale)
+    /// <summary>Inhaltsbereich: Seitenkopf (Titel/Untertitel/Trenn-Ornament) + jeweilige Seite - 1:1 wie CodexMenuWindow.DrawContent (About hat bewusst KEINEN gemeinsamen Seitenkopf, siehe dortigen Kommentar).
+    /// Gibt zurück, ob gerade auf die zentral gezeichneten Einklappen/Schließen-Knöpfe geklickt wurde (siehe deren Kommentar weiter unten).</summary>
+    private UiWindowControls.ButtonsResult DrawContent(float scale)
     {
         ImGui.BeginChild("##OceanMenuContent", Vector2.Zero, false);
         ImGui.Indent(UiMetrics.PageMargin * scale);
@@ -712,7 +840,28 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
 
         ImGui.Unindent(UiMetrics.PageMargin * scale);
+
+        // Einklappen/Schließen - zentral vom Fenster gezeichnet, NICHT je Seite, ganz rechts in der
+        // Kopfzeile, vertikal auf die Mitte des Seitentitels ausgerichtet (keine der aktuellen Ocean-
+        // Seiten hat eigene Reset/Save-Knöpfe, daher hasPageButtons: false). WICHTIG: innerhalb DIESES
+        // Childs gezeichnet (nicht erst danach im Fenster) - ein außerhalb eines Childs gezeichnetes
+        // Item wird von ImGui für Hover/Klick NICHT als "vor" diesem Child liegend erkannt, selbst wenn
+        // es zeitlich danach gezeichnet wird (das Child "gewinnt" die Maus-Treffererkennung für seine
+        // eigene Fläche) - Knopf wäre sichtbar, aber nicht klickbar (1:1 derselbe Bug/Fix wie
+        // CodexMenuWindow.DrawContent).
+        var childPos = ImGui.GetWindowPos();
+        var childSize = ImGui.GetWindowSize();
+        float titleFontHeight;
+        using (PageTitleFont.Push())
+            titleFontHeight = ImGui.GetFontSize();
+        var headerButtonsCenterY = childPos.Y + (28f + titleFontHeight / 2f) * scale;
+        var headerButtonsRightEdge = childPos.X + childSize.X - 18f * scale;
+
+        var controls = UiWindowControls.DrawExpandedButtons(scale, headerButtonsRightEdge, headerButtonsCenterY, hasPageButtons: false,
+            collapseTooltip: Loc.T("Einklappen", "Collapse"), closeTooltip: Loc.T("Schließen", "Close"));
+
         ImGui.EndChild();
+        return controls;
     }
 
     // ---- Seite "Start" - Hero-Karte (Status/Next-up/Prep-Infos links, Start/Stop rechts) + Tabelle
