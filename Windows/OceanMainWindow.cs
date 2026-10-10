@@ -1684,32 +1684,6 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
         UiWidgets.EndDropdownRow(gearsetOpen, disabled: false);
 
-        UiWidgets.CardDivider(scale);
-        var desynthesisAfterFishing = config.DesynthesisAfterFishing;
-        if (UiWidgets.ToggleRow("##OceanDesynthesisAfterFishing", Loc.T("Desynthesis nach dem Angeln", "Desynthesis after fishing"), ref desynthesisAfterFishing, scale,
-                caption: Loc.T(
-                    "Nur wenn in 10 Minuten kein Prep Timer beginnt.",
-                    "Only if no prep timer begins within 10 minutes."),
-                labelFont: FieldLabelFont, captionFont: DropdownCaptionFont))
-        {
-            config.DesynthesisAfterFishing = desynthesisAfterFishing;
-            config.Save();
-        }
-
-        UiWidgets.CardDivider(scale);
-        if (!desynthesisAfterFishing)
-            ImGui.BeginDisabled();
-        var desynthesisIgnoreBigFish = config.DesynthesisIgnoreBigFish;
-        if (UiWidgets.ToggleRow("##OceanDesynthesisIgnoreBigFish", Loc.T("Big Fish ignorieren", "Ignore Big Fish"), ref desynthesisIgnoreBigFish, scale,
-                caption: Loc.T("Desynthese von allen Fischen mit Ausnahme von Big Fish.", "Desynthesize all fish except Big Fish."),
-                labelFont: FieldLabelFont, captionFont: DropdownCaptionFont))
-        {
-            config.DesynthesisIgnoreBigFish = desynthesisIgnoreBigFish;
-            config.Save();
-        }
-        if (!desynthesisAfterFishing)
-            ImGui.EndDisabled();
-
         UiWidgets.EndCard();
     }
 
@@ -2079,12 +2053,6 @@ public sealed class OceanMainWindow : Window, IDisposable
         var width = ImGui.GetContentRegionAvail().X - rightMargin;
 
         DrawDebugStatusCard(scale, width);
-
-        ImGui.Dummy(new Vector2(0f, 16f * scale));
-        DrawDebugSimulationCard(scale, width);
-
-        ImGui.Dummy(new Vector2(0f, 16f * scale));
-        DrawDebugDumpsCard(scale, width);
     }
 
     private void DrawDebugStatusCard(float scale, float width)
@@ -2226,131 +2194,6 @@ public sealed class OceanMainWindow : Window, IDisposable
         ImGui.SetCursorPos(new Vector2(leftX, MathF.Max(titleRowY + titleHeight, buttonY + buttonSize.Y)));
     }
 
-    /// <summary>Karte "Simulation" - 1:1 Schriftgrößen/Abstände wie CodexMenuWindow.DrawDebugSimulationCard, mit Big Fish Helpers eigenem Inhalt
-    /// (Desynthesis-Simulation starten/stoppen + Statustext) statt Codex' vier Automations-Simulationsschaltern.</summary>
-    private void DrawDebugSimulationCard(float scale, float width)
-    {
-        var T = UiTheme.Active;
-        UiWidgets.BeginCard(scale, width: width);
-        var contentWidth = width - UiWidgets.CardPaddingX * 2f;
-
-        using (DebugCardTitleFont.Push())
-            ImGui.TextColored(T.TextCardTitle, Loc.T("Simulation", "Simulation"));
-
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-        var lineCursor = ImGui.GetCursorScreenPos();
-        ImGui.GetWindowDrawList().AddLine(lineCursor, lineCursor + new Vector2(contentWidth, 0f), ImGui.GetColorU32(T.LineSubtle));
-        ImGui.Dummy(new Vector2(0f, 8f * scale));
-
-        var automation = plugin.Automation;
-        var running = automation.IsRunning;
-        if (running)
-            ImGui.BeginDisabled();
-        if (DrawDebugActionButton(scale, Loc.T("Desynthesis simulieren", "Simulate desynthesis")))
-            automation.StartDesynthesisSimulation();
-        if (running)
-        {
-            ImGui.EndDisabled();
-            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            {
-                ImGui.SetTooltip(Loc.T(
-                    "Läuft bereits eine Automation (oder eine andere Simulation) - erst stoppen.",
-                    "An automation (or another simulation) is already running - stop it first."));
-            }
-        }
-
-        if (!string.IsNullOrEmpty(automation.StatusText))
-        {
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
-            using (DebugDescriptionFont.Push())
-                ImGui.TextColored(automation.IsRunning ? T.Accent : T.TextMuted, automation.StatusText);
-        }
-
-        if (automation.IsRunning)
-        {
-            ImGui.Dummy(new Vector2(0f, 8f * scale));
-            if (DrawDebugActionButton(scale, Loc.T("Stopp", "Stop")))
-                automation.Stop();
-        }
-
-        UiWidgets.EndCard();
-    }
-
-    /// <summary>Karte "Debug-Ausgaben" - 1:1 Schriftgrößen/Abstände wie CodexMenuWindow.DrawDebugDumpsCard, mit Big Fish Helpers einzigem Dump-Knopf
-    /// ("Log fish list") statt Codex' vielen Dump-Knöpfen (kein CodexWidgets.FlowButtons-Umbruch nötig, nur ein Eintrag).</summary>
-    private void DrawDebugDumpsCard(float scale, float width)
-    {
-        var T = UiTheme.Active;
-        UiWidgets.BeginCard(scale, width: width);
-        var contentWidth = width - UiWidgets.CardPaddingX * 2f;
-
-        var titleRowY = ImGui.GetCursorPosY();
-        var rowLeftX = ImGui.GetCursorPosX();
-        var title = Loc.T("Debug-Ausgaben", "Debug Dumps");
-        float titleHeight;
-        using (DebugCardTitleFont.Push())
-        {
-            titleHeight = ImGui.CalcTextSize(title).Y;
-            ImGui.TextColored(T.TextCardTitle, title);
-        }
-
-        var hint = Loc.T("Schreibt die Daten ins Dalamud-Log (/xllog).", "Writes the data to the Dalamud log (/xllog).");
-        float hintWidth, hintHeight;
-        using (DebugDescriptionFont.Push())
-        {
-            var size = ImGui.CalcTextSize(hint);
-            hintWidth = size.X;
-            hintHeight = size.Y;
-        }
-        var hintX = rowLeftX + contentWidth - hintWidth;
-        var hintY = titleRowY + (titleHeight - hintHeight) / 2f;
-        ImGui.SetCursorPos(new Vector2(hintX, hintY));
-        using (DebugDescriptionFont.Push())
-            ImGui.TextColored(T.TextMuted, hint);
-
-        ImGui.SetCursorPos(new Vector2(rowLeftX, MathF.Max(titleRowY + titleHeight, hintY + hintHeight)));
-        ImGui.Dummy(new Vector2(0f, 6f * scale));
-        var lineCursor = ImGui.GetCursorScreenPos();
-        ImGui.GetWindowDrawList().AddLine(lineCursor, lineCursor + new Vector2(contentWidth, 0f), ImGui.GetColorU32(T.LineSubtle));
-        ImGui.Dummy(new Vector2(0f, 12f * scale));
-
-        if (DrawDebugActionButton(scale, Loc.T("Fisch-Liste ins Log schreiben", "Log fish list")))
-            GameActions.DumpDesynthesizableFishInInventory();
-
-        UiWidgets.EndCard();
-    }
-
-    /// <summary>Randloser, bordierter Knopf im Debug-Karten-Stil (1:1 CodexWidgets.FlowButtons-Optik, nur ohne Icon/Umbruch - hier immer nur ein Knopf je Karte).</summary>
-    private static bool DrawDebugActionButton(float scale, string label)
-    {
-        var T = UiTheme.Active;
-        var padding = new Vector2(11f * scale, 5f * scale);
-        float textWidth, textHeight;
-        using (DebugButtonLabelFont.Push())
-        {
-            var size = ImGui.CalcTextSize(label);
-            textWidth = size.X;
-            textHeight = size.Y;
-        }
-        var buttonSize = new Vector2(textWidth + padding.X * 2f, textHeight + padding.Y * 2f);
-
-        var cursor = ImGui.GetCursorScreenPos();
-        var clicked = ImGui.InvisibleButton($"##OceanDebugAction_{label}", buttonSize);
-        var hovered = ImGui.IsItemHovered();
-
-        var dl = ImGui.GetWindowDrawList();
-        var bg = hovered ? T.BgSelected : T.BgPopup;
-        var border = hovered ? T.Accent : T.LineControl;
-        dl.AddRectFilled(cursor, cursor + buttonSize, ImGui.GetColorU32(bg), UiMetrics.ControlRadius * scale);
-        dl.AddRect(cursor, cursor + buttonSize, ImGui.GetColorU32(border), UiMetrics.ControlRadius * scale);
-
-        using (DebugButtonLabelFont.Push())
-            dl.AddText(cursor + padding, ImGui.GetColorU32(T.TextHeading), label);
-
-        if (hovered)
-            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-        return clicked;
-    }
 
     // ---- Seite "Log" - 1:1 derselbe Aufbau wie CodexMenuWindow.DrawLogPage (Knöpfe, Größen,
     // Abstände, rechter Randabstand, Schriftgrößen identisch) - eigener, von MainWindow unabhängiger
