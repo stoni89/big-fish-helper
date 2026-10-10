@@ -59,18 +59,6 @@ public class Configuration : IPluginConfiguration
     // immer verfügbaren Fischs beginnt (0 = aus, Default) - siehe FishingAutomation.UpdateWaiting.
     public int AlwaysUpFishBackupTimerMinutes { get; set; } = 0;
 
-    // Einstellungen -> Allgemein -> Angeln: nach dem Angeln (Fisch gefangen/Fenster vorbei) alle
-    // Fische im Hauptinventar nativ desynthetisieren (AgentSalvage.SalvageItem, kein Fremd-Plugin
-    // nötig), aber nur, wenn dafür auch wirklich Zeit ist (Nutzeranforderung) - siehe
-    // FishingAutomation.ShouldDesynthesizeNow/UpdateDesynthesizing.
-    public bool DesynthesisAfterFishing { get; set; } = false;
-
-    // Einstellungen -> Allgemein -> Angeln -> "Desynthesis nach dem Angeln" -> "Big Fish ignorieren"
-    // (Nutzeranforderung): Desynthesis betrifft standardmäßig ALLE Fische im Hauptinventar, mit diesem
-    // Schalter werden Big Fish (BigFishData.All) davon ausgenommen - siehe
-    // FishingAutomation.UpdateDesynthesizing.
-    public bool DesynthesisIgnoreBigFish { get; set; } = false;
-
     // Einstellungen -> Allgemein -> Angeln: konfiguriertes Ausrüstungsset-Preset, auf das die
     // Automation als ALLERERSTES wechselt, noch vor jedem Teleport (Nutzeranforderung) - siehe
     // FishingAutomation.UpdateSwitchingJobFirst. -1 = noch keins ausgewählt (Start-Knopf bleibt dann

@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.8.0",
+    "date": "2026-10-10",
+    "title": "Desynthesis Removed",
+    "title_de": "Desynthesis entfernt",
+    "changes": [
+      { "type": "fixed", "text": "Removed Desynthesis (it bugged so often).", "text_de": "Desynthesis entfernt (hat zu oft gebuggt)." },
+      { "type": "fixed", "text": "Overlay not showing the Prep Phase.", "text_de": "Overlay zeigte die Prep-Phase nicht an." }
+    ]
+  },
+  {
     "version": "1.7.0",
     "date": "2026-10-08",
     "title": "Collapsible Menu",
