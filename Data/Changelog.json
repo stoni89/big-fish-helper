@@ -1,5 +1,17 @@
 [
   {
+    "version": "1.9.0",
+    "date": "2026-10-11",
+    "title": "Required Plugins Status",
+    "title_de": "Pflicht-Plugin-Status",
+    "changes": [
+      { "type": "new", "text": "The Plugins page now shows Installed, Disabled, or Not installed per plugin, with an Enable/Install button for each.", "text_de": "Die Plugins-Seite zeigt jetzt je Plugin Installiert, Deaktiviert oder Nicht installiert, mit einem Aktivieren-/Installieren-Knopf dafür." },
+      { "type": "new", "text": "The Plugins sidebar icon shows a badge with the number of plugin problems.", "text_de": "Das Plugins-Symbol in der Seitenleiste zeigt ein Badge mit der Anzahl der Plugin-Probleme." },
+      { "type": "fixed", "text": "The automation now stops itself and shows Blocked if a required plugin is missing or gets disabled while running.", "text_de": "Die Automation stoppt sich jetzt selbst und zeigt Blockiert an, wenn ein benötigtes Plugin fehlt oder während des Laufens deaktiviert wird." },
+      { "type": "fixed", "text": "The Start button and overlay are now locked with a clear reason until all required plugins are ready.", "text_de": "Der Start-Knopf und das Overlay sind jetzt mit klarem Grund gesperrt, bis alle benötigten Plugins bereit sind." }
+    ]
+  },
+  {
     "version": "1.8.1",
     "date": "2026-10-11",
     "title": "Several Fixes",
