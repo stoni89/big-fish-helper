@@ -132,6 +132,10 @@ public sealed class StatusOverlayWindow : Window, IDisposable
     private static readonly Vector4 CoralRed = UiTheme.Hex("#E58A74");
     private static readonly Vector4 StopTextColor = UiTheme.Hex("#2A0E08");
     private static readonly Vector4 PhaseUpcomingLine = UiTheme.Hex("#5E7C88");
+    // Für den neuen Blocked-Zustand (fehlende/deaktivierte Pflicht-Plugins) - eigene Box-Farben
+    // analog zu AttentionBg/AttentionBorder, nur Koralle statt Gelb.
+    private static readonly Vector4 BlockedBg = UiTheme.Hex("#E58A74", 0.07f);
+    private static readonly Vector4 BlockedBorder = UiTheme.Hex("#6B3A30");
 
     private enum UiState
     {
@@ -141,6 +145,7 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         Prep,
         Fishing,
         Attention,
+        Blocked,
     }
 
     public StatusOverlayWindow(Plugin plugin) : base("##BigFishHelperStatusOverlay", BaseFlags)
@@ -210,17 +215,24 @@ public sealed class StatusOverlayWindow : Window, IDisposable
             attentionDismissedUntilUtc = null;
         var showAttention = attentionReason != null && attentionDismissedUntilUtc == null;
 
-        var uiState = !isRunning
-            ? UiState.Idle
-            : showAttention
-                ? UiState.Attention
-                : automation.CurrentPhase switch
-                {
-                    FishingAutomation.Phase.Flying => UiState.Flying,
-                    FishingAutomation.Phase.Prep => UiState.Prep,
-                    FishingAutomation.Phase.Fishing => UiState.Fishing,
-                    _ => UiState.Waiting,
-                };
+        // Nutzeranforderung: fehlende/deaktivierte Pflicht-Plugins haben Vorrang vor allen anderen
+        // Zuständen - FishingAutomation.OnUpdate pausiert in diesem Fall ohnehin bereits selbst
+        // (isRunning wird dadurch false), hier zusätzlich auch für den Fall geprüft, dass das Overlay
+        // VOR dem nächsten Tick gezeichnet wird bzw. man noch nie gestartet hat.
+        var blocked = !RequiredPlugins.AllReady;
+        var uiState = blocked
+            ? UiState.Blocked
+            : !isRunning
+                ? UiState.Idle
+                : showAttention
+                    ? UiState.Attention
+                    : automation.CurrentPhase switch
+                    {
+                        FishingAutomation.Phase.Flying => UiState.Flying,
+                        FishingAutomation.Phase.Prep => UiState.Prep,
+                        FishingAutomation.Phase.Fishing => UiState.Fishing,
+                        _ => UiState.Waiting,
+                    };
 
         if (config.OverlayCompact)
         {
@@ -235,6 +247,20 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         ImGui.Dummy(new Vector2(0f, PadTop * scale));
 
         DrawStatusRow(scale, uiState, automation, config, contentWidth);
+
+        // Blocked zeigt nur Statuszeile + Problem-Box + Aktionszeile (gesperrter Start + "Plugins") -
+        // keine Phasenleiste/Fischzeile/Timer, die ohnehin keinen Sinn ergäben, solange nicht einmal
+        // die Automation starten kann.
+        if (uiState == UiState.Blocked)
+        {
+            ImGui.Dummy(new Vector2(0f, BlockGap * scale));
+            DrawBlockedBox(scale, contentWidth);
+            ImGui.Dummy(new Vector2(0f, BlockGap * scale));
+            DrawActionRow(scale, uiState, automation, config, null, contentWidth);
+            ImGui.Unindent(PadX * scale);
+            ImGui.Dummy(new Vector2(0f, (PadTop - 3f) * scale));
+            return;
+        }
 
         if (uiState is UiState.Waiting or UiState.Flying or UiState.Prep or UiState.Fishing)
         {
@@ -389,6 +415,7 @@ public sealed class StatusOverlayWindow : Window, IDisposable
             UiState.Prep => (Loc.T("VORBEREITUNG", "PREPARING"), T.Accent, T.Accent with { W = 0.1f }, WaitingBorder),
             UiState.Fishing => (Loc.T("ANGELT", "FISHING"), FishingGreen, FishingBg, FishingBorder),
             UiState.Attention => (Loc.T("ACHTUNG", "ATTENTION"), AttentionYellow, AttentionBg, AttentionBorder),
+            UiState.Blocked => (Loc.T("BLOCKIERT", "BLOCKED"), CoralRed, CoralRed with { W = 0.1f }, BlockedBorder),
             _ => (Loc.T("IDLE", "IDLE"), T.TextSecondary, T.BgToggleOff, T.LineFrame),
         };
     }
@@ -405,6 +432,8 @@ public sealed class StatusOverlayWindow : Window, IDisposable
                 return Loc.T("Fenster offen", "Window open");
             case UiState.Attention:
                 return Loc.T("Pausiert", "Paused");
+            case UiState.Blocked:
+                return Loc.T($"{RequiredPlugins.ProblemCount} Plugins", $"{RequiredPlugins.ProblemCount} plugins");
             case UiState.Idle:
                 return Loc.T($"{automation.GetPlannedFish(DateTime.UtcNow).Length} Fisch(e) geplant", $"{automation.GetPlannedFish(DateTime.UtcNow).Length} fish planned");
             default:
@@ -750,6 +779,44 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + boxHeight));
     }
 
+    /// <summary>Wie DrawAttentionBox, aber eine Zeile pro fehlendem/deaktiviertem Pflicht-Plugin statt eines Fließtexts.</summary>
+    private void DrawBlockedBox(float scale, float contentWidth)
+    {
+        var T = UiTheme.Active;
+        var padX = 10f * scale;
+        var padY = 9f * scale;
+        var problems = RequiredPlugins.Problems;
+
+        float rowHeight;
+        using (WarningBodyFont.Push())
+            rowHeight = ImGui.GetTextLineHeight() + 4f * scale;
+
+        var boxHeight = padY * 2f + rowHeight * problems.Count;
+        var origin = ImGui.GetCursorScreenPos();
+        var dl = ImGui.GetWindowDrawList();
+        dl.AddRectFilled(origin, origin + new Vector2(contentWidth, boxHeight), ImGui.GetColorU32(BlockedBg), 5f * scale);
+        dl.AddRect(origin, origin + new Vector2(contentWidth, boxHeight), ImGui.GetColorU32(BlockedBorder), 5f * scale);
+
+        using (WarningBodyFont.Push())
+        {
+            for (var i = 0; i < problems.Count; i++)
+            {
+                var (name, status) = problems[i];
+                var rowY = origin.Y + padY + rowHeight * i;
+                ImGui.SetCursorScreenPos(new Vector2(origin.X + padX, rowY));
+                ImGui.TextColored(T.TextPrimary, name);
+
+                var statusText = status == RequiredPluginStatus.Missing ? Loc.T("fehlt", "missing") : Loc.T("deaktiviert", "disabled");
+                var statusColor = status == RequiredPluginStatus.Missing ? CoralRed : AttentionYellow;
+                var statusWidth = ImGui.CalcTextSize(statusText).X;
+                ImGui.SetCursorScreenPos(new Vector2(origin.X + contentWidth - padX - statusWidth, rowY));
+                ImGui.TextColored(statusColor, statusText);
+            }
+        }
+
+        ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + boxHeight));
+    }
+
     // ---- f) Aktionszeile ----
 
     private void DrawActionRow(float scale, UiState uiState, FishingAutomation automation, Configuration config, BigFish? fish, float contentWidth)
@@ -763,12 +830,21 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         var origin = ImGui.GetCursorScreenPos();
 
         var (mainLabel, mainIcon, mainBg, mainFg, mainDisabled, mainAction) = MainButton(uiState, automation, config, fish);
-        if (DrawActionButton(origin, new Vector2(mainWidth, buttonHeight), mainLabel, mainIcon, mainBg, mainFg, mainDisabled, scale))
+        var blockedTooltip = uiState == UiState.Blocked ? RequiredPlugins.BuildBlockedTooltip() : null;
+        if (DrawActionButton(origin, new Vector2(mainWidth, buttonHeight), mainLabel, mainIcon, mainBg, mainFg, mainDisabled, scale,
+                fullOpacityWhenDisabled: uiState == UiState.Blocked, disabledTooltip: blockedTooltip))
             mainAction?.Invoke();
 
         var menuX = origin.X + mainWidth + gap;
-        if (DrawIconActionButton(new Vector2(menuX, origin.Y), new Vector2(iconButtonWidth, buttonHeight), UiIcon.Sliders, Loc.T("Menü öffnen", "Open menu"), false, scale))
+        if (uiState == UiState.Blocked)
+        {
+            if (DrawIconActionButton(new Vector2(menuX, origin.Y), new Vector2(iconButtonWidth, buttonHeight), UiIcon.Plug, Loc.T("Plugins", "Plugins"), false, scale))
+                plugin.OceanMainWindow.OpenToPluginsPage();
+        }
+        else if (DrawIconActionButton(new Vector2(menuX, origin.Y), new Vector2(iconButtonWidth, buttonHeight), UiIcon.Sliders, Loc.T("Menü öffnen", "Open menu"), false, scale))
+        {
             plugin.OceanMainWindow.IsOpen = true;
+        }
 
         ImGui.SetCursorScreenPos(new Vector2(origin.X, origin.Y + buttonHeight));
     }
@@ -776,6 +852,9 @@ public sealed class StatusOverlayWindow : Window, IDisposable
     private (string Label, UiIcon Icon, Vector4 Bg, Vector4 Fg, bool Disabled, System.Action? Action) MainButton(UiState uiState, FishingAutomation automation, Configuration config, BigFish? fish)
     {
         var T = UiTheme.Active;
+        if (uiState == UiState.Blocked)
+            return (Loc.T("Start", "Start"), UiIcon.Lock, T.BgToggleOff, T.TextMuted, true, null);
+
         if (uiState == UiState.Idle)
         {
             var disabled = !automation.HasEnabledFish;
@@ -793,18 +872,20 @@ public sealed class StatusOverlayWindow : Window, IDisposable
     // Stellen (Hauptknopf/Kompakt-Pille) identisch aussieht und sich bei Bedarf leicht erweitern lässt.
     private static void StartAutomation(FishingAutomation automation, Configuration config) => automation.Start();
 
-    private bool DrawActionButton(Vector2 pos, Vector2 size, string label, UiIcon icon, Vector4 bg, Vector4 fg, bool disabled, float scale)
+    private bool DrawActionButton(Vector2 pos, Vector2 size, string label, UiIcon icon, Vector4 bg, Vector4 fg, bool disabled, float scale, bool fullOpacityWhenDisabled = false, string? disabledTooltip = null)
     {
         var dl = ImGui.GetWindowDrawList();
         ImGui.SetCursorScreenPos(pos);
         if (disabled)
             ImGui.BeginDisabled();
         var clicked = ImGui.InvisibleButton("##OceanOverlayMainAction", size);
-        var hovered = !disabled && ImGui.IsItemHovered();
+        // AllowWhenDisabled, damit disabledTooltip (Nutzeranforderung: Tooltip am gesperrten Start-Knopf) greift.
+        var hoveredRaw = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        var hovered = !disabled && hoveredRaw;
         if (disabled)
             ImGui.EndDisabled();
 
-        var fillColor = disabled ? bg with { W = 0.35f } : bg with { W = hovered ? 0.85f : 1f };
+        var fillColor = disabled ? bg with { W = fullOpacityWhenDisabled ? 1f : 0.35f } : bg with { W = hovered ? 0.85f : 1f };
         dl.AddRectFilled(pos, pos + size, ImGui.GetColorU32(fillColor), 5f * scale);
 
         var iconSize = 13f * scale;
@@ -820,6 +901,8 @@ public sealed class StatusOverlayWindow : Window, IDisposable
 
         if (hovered)
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        if (disabled && hoveredRaw && disabledTooltip != null)
+            ImGui.SetTooltip(disabledTooltip);
         return clicked && !disabled;
     }
 
@@ -884,7 +967,16 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         var actionSize = new Vector2(28f * scale, 28f * scale);
         var rightReserved = expandSize.X + 6f * scale + actionSize.X + 10f * scale;
 
-        if (fish != null)
+        if (uiState == UiState.Blocked)
+        {
+            var blockedText = Loc.T($"Blockiert · {RequiredPlugins.ProblemCount} Plugins", $"Blocked · {RequiredPlugins.ProblemCount} plugins");
+            using (CompactNameFont.Push())
+            {
+                ImGui.SetCursorScreenPos(new Vector2(nameX, origin.Y + (height - ImGui.GetTextLineHeight()) / 2f));
+                ImGui.TextColored(CoralRed, UiWidgetsExtra.TruncateToWidth(blockedText, width - rightReserved - (nameX - origin.X) - 10f * scale));
+            }
+        }
+        else if (fish != null)
         {
             var name = FishingAutomation.FishName(fish);
             using (CompactNameFont.Push())
@@ -913,18 +1005,27 @@ public sealed class StatusOverlayWindow : Window, IDisposable
         var actionX = origin.X + width - 10f * scale - actionSize.X;
         var actionPos = new Vector2(actionX, origin.Y + (height - actionSize.Y) / 2f);
         ImGui.SetCursorScreenPos(actionPos);
+        if (uiState == UiState.Blocked)
+            ImGui.BeginDisabled();
         var actionClicked = ImGui.InvisibleButton("##OceanOverlayCompactAction", actionSize);
-        var actionHovered = ImGui.IsItemHovered();
+        var actionHoveredRaw = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
+        if (uiState == UiState.Blocked)
+            ImGui.EndDisabled();
+        var actionHovered = uiState != UiState.Blocked && actionHoveredRaw;
         if (actionHovered)
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        if (uiState == UiState.Blocked && actionHoveredRaw)
+            ImGui.SetTooltip(RequiredPlugins.BuildBlockedTooltip());
 
-        var actionBg = running ? CoralRed : T.Accent;
+        var actionBg = uiState == UiState.Blocked ? T.BgToggleOff : running ? CoralRed : T.Accent;
         dl.AddCircleFilled(actionPos + actionSize / 2f, actionSize.X / 2f, ImGui.GetColorU32(actionBg with { W = actionHovered ? 0.85f : 1f }));
         if (actionHovered)
             dl.AddCircle(actionPos + actionSize / 2f, actionSize.X / 2f + 2f * scale, ImGui.GetColorU32(actionBg with { W = 0.5f }), 24, 1.5f * scale);
         var actionIconSize = 12f * scale;
-        UiIcons.Draw(running ? UiIcon.Stop : UiIcon.Play, actionPos + (actionSize - new Vector2(actionIconSize)) / 2f, actionIconSize, ImGui.GetColorU32(running ? StopTextColor : T.TextOnAccent));
-        if (actionClicked)
+        var actionIcon = uiState == UiState.Blocked ? UiIcon.Lock : running ? UiIcon.Stop : UiIcon.Play;
+        var actionIconColor = uiState == UiState.Blocked ? T.TextMuted : running ? StopTextColor : T.TextOnAccent;
+        UiIcons.Draw(actionIcon, actionPos + (actionSize - new Vector2(actionIconSize)) / 2f, actionIconSize, ImGui.GetColorU32(actionIconColor));
+        if (actionClicked && uiState != UiState.Blocked)
         {
             if (running)
                 automation.Stop();

@@ -294,6 +294,11 @@ public sealed class OceanMainWindow : Window, IDisposable
     private static readonly Vector4 StartRunningBorder = new(0.184f, 0.420f, 0.290f, 1f); // #2F6B4A
     private static readonly Vector4 StartStopTextColor = new(0.165f, 0.055f, 0.031f, 1f); // #2A0E08
 
+    // Für die Pflicht-Plugin-Statusanzeigen (Plugins-Seite/Start-Seite/Overlay) - 1:1 die in der
+    // Aufgabenstellung genannten Hex-Werte, genau wie StartRunningBorder/StartStopTextColor oben.
+    private static readonly Vector4 PluginBlockedBorder = new(0.420f, 0.227f, 0.188f, 1f); // #6B3A30
+    private static readonly Vector4 PluginDisabledYellow = new(0.914f, 0.769f, 0.416f, 1f); // #E9C46A
+
     private (string Text, DateTime ExpiresAtUtc, uint FishItemId)? startUndoToast;
 
     // "Planned Fish" nicht bei jedem einzelnen Frame neu berechnen (gleiches 500ms-Cache-Muster wie
@@ -332,6 +337,13 @@ public sealed class OceanMainWindow : Window, IDisposable
     }
 
     private AppPage currentPage = AppPage.Start;
+
+    /// <summary>Für den Overlay-"Plugins"-Knopf im Blocked-Zustand (siehe StatusOverlayWindow.DrawActionRow) - öffnet das Menü direkt auf der Plugins-Seite.</summary>
+    public void OpenToPluginsPage()
+    {
+        currentPage = AppPage.Plugins;
+        IsOpen = true;
+    }
 
     private readonly Plugin plugin;
 
@@ -592,7 +604,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         UiWidgets.SectionLabel(Loc.T("SYSTEM", "SYSTEM"));
         ImGui.Dummy(new Vector2(0f, 6f * scale));
 
-        DrawNavItem(scale, AppPage.Plugins, FontAwesomeIcon.Plug, Loc.T("Plugins", "Plugins"));
+        DrawNavItem(scale, AppPage.Plugins, FontAwesomeIcon.Plug, Loc.T("Plugins", "Plugins"), badgeCount: RequiredPlugins.ProblemCount);
 
         // Nur in der Dev-Version (Entwickler-Werkzeug) - 1:1 wie CodexMenuWindow.DrawSidebar.
         if (Plugin.PluginInterface.IsDev)
@@ -724,9 +736,32 @@ public sealed class OceanMainWindow : Window, IDisposable
             drawList.AddText(new Vector2(badgeCursor.X + padding.X + diamondSize + diamondGap, badgeCursor.Y + padding.Y), ImGui.GetColorU32(T.TextOnAccent), label);
     }
 
+    /// <summary>Rundes Zahlen-Badge rechtsbündig in einem Menüpunkt (Plugins, Anzahl der Probleme) - Koralle-Fläche + dunkler Text,
+    /// dasselbe Farbpaar wie der "Stopp"-Knopf (FishDataCoralRed/StartStopTextColor). Nutzeranforderung: bei 0 kein Badge (siehe Aufrufer).</summary>
+    private static void DrawNavCountBadge(float scale, Vector2 itemCursor, float itemWidth, float itemHeight, int count)
+    {
+        var label = count.ToString();
+        float textWidth, textHeight;
+        using (ChangelogNavBadgeFont.Push())
+        {
+            var size = ImGui.CalcTextSize(label);
+            textWidth = size.X;
+            textHeight = size.Y;
+        }
+
+        var diameter = MathF.Max(16f * scale, textHeight + 6f * scale);
+        var badgeCenter = new Vector2(itemCursor.X + itemWidth - 12f * scale - diameter / 2f, itemCursor.Y + itemHeight / 2f);
+
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddCircleFilled(badgeCenter, diameter / 2f, ImGui.GetColorU32(FishDataCoralRed), 24);
+
+        using (ChangelogNavBadgeFont.Push())
+            drawList.AddText(badgeCenter - new Vector2(textWidth, textHeight) / 2f, ImGui.GetColorU32(StartStopTextColor), label);
+    }
+
     /// <summary>Wie DrawNavItem(UiIcon), aber mit einem echten FontAwesomeIcon-Glyphen statt eines von Hand gezeichneten UiIcon - Nutzeranforderung
     /// ("FontAwesomeIcon.InfoCircle auch beim Big Fish Helper nutzen") nur für den "Über"-Menüpunkt, alle anderen Menüpunkte bleiben bei UiIcon.</summary>
-    private void DrawNavItem(float scale, AppPage page, FontAwesomeIcon icon, string label, bool showNewBadge = false)
+    private void DrawNavItem(float scale, AppPage page, FontAwesomeIcon icon, string label, bool showNewBadge = false, int? badgeCount = null)
     {
         var selected = currentPage == page;
         var T = UiTheme.Active;
@@ -768,6 +803,8 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         if (showNewBadge)
             DrawNavNewBadge(scale, cursor, width, height);
+        if (badgeCount is > 0)
+            DrawNavCountBadge(scale, cursor, width, height, badgeCount.Value);
 
         if (clicked)
             currentPage = page;
@@ -923,6 +960,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         var T = UiTheme.Active;
         var running = automation.IsRunning;
         var hasNext = planned.Length > 0;
+        var blocked = !RequiredPlugins.AllReady;
 
         var stacked = contentWidth < 700f * scale;
         var rightWidth = stacked ? contentWidth : 250f * scale;
@@ -960,7 +998,19 @@ public sealed class OceanMainWindow : Window, IDisposable
             tileValueH = ImGui.GetTextLineHeight();
         var tileRowHeight = 8f * scale * 2f + tileLabelH + 4f * scale + tileValueH; // = UiWidgetsExtra.InfoTile-Formel
 
-        var leftContentHeight = statusRowHeight + 12f * scale + nextUpRowHeight + 12f * scale + tileRowHeight;
+        // Nutzeranforderung: unter "Next up" eine Warnzeile, solange Pflicht-Plugins fehlen/deaktiviert
+        // sind - Höhe hier mitgemessen (siehe Grundregel oben), damit die Kartenhöhe weiterhin VOR dem
+        // Hintergrund feststeht.
+        float blockedRowTextHeight = 0f, blockedRowHeight = 0f;
+        if (blocked)
+        {
+            using (StartAreaFont.Push())
+                blockedRowTextHeight = ImGui.GetTextLineHeight();
+            blockedRowHeight = blockedRowTextHeight + 16f * scale;
+        }
+
+        var leftContentHeight = statusRowHeight + 12f * scale + nextUpRowHeight + 12f * scale
+            + (blocked ? blockedRowHeight + 12f * scale : 0f) + tileRowHeight;
         var leftHeight = padY * 2f + leftContentHeight;
 
         var buttonHeight = 52f * scale;
@@ -998,13 +1048,18 @@ public sealed class OceanMainWindow : Window, IDisposable
         var leftOrigin = cardOrigin + new Vector2(padX, padY);
         var statusY = leftOrigin.Y + (statusRowHeight - pillHeight) / 2f;
         ImGui.SetCursorScreenPos(new Vector2(leftOrigin.X, statusY));
-        var pillText = running ? Loc.T("LÄUFT", "RUNNING") : Loc.T("IDLE", "IDLE");
-        var pillFg = running ? FishDataActiveGreen : T.TextSecondary;
-        var pillBg = running ? FishDataActiveGreen with { W = 0.1f } : T.BgToggleOff;
-        var pillLine = running ? StartRunningBorder : T.LineFrame;
+        var pillText = blocked ? Loc.T("BLOCKIERT", "BLOCKED") : running ? Loc.T("LÄUFT", "RUNNING") : Loc.T("IDLE", "IDLE");
+        var pillFg = blocked ? FishDataCoralRed : running ? FishDataActiveGreen : T.TextSecondary;
+        var pillBg = blocked ? FishDataCoralRed with { W = 0.1f } : running ? FishDataActiveGreen with { W = 0.1f } : T.BgToggleOff;
+        var pillLine = blocked ? PluginBlockedBorder : running ? StartRunningBorder : T.LineFrame;
         var pillSize = UiWidgetsExtra.Badge(pillText, pillFg, pillBg, pillLine, scale, StartPillLabelFont);
 
-        var statusText = running ? automation.StatusText : Loc.T($"Bereit – {planned.Length} Fisch(e) geplant", $"Ready – {planned.Length} fish planned");
+        var problemCountForStatus = RequiredPlugins.ProblemCount;
+        var statusText = blocked
+            ? Loc.T($"{problemCountForStatus} benötigte Plugins sind nicht bereit", $"{problemCountForStatus} required plugins are not ready")
+            : running
+                ? automation.StatusText
+                : Loc.T($"Bereit – {planned.Length} Fisch(e) geplant", $"Ready – {planned.Length} fish planned");
         ImGui.SetCursorScreenPos(new Vector2(leftOrigin.X + pillSize.X + 8f * scale, leftOrigin.Y + (statusRowHeight - statusTextHeight) / 2f));
         using (StartStatusFont.Push())
             ImGui.TextColored(T.TextDesc, statusText);
@@ -1050,12 +1105,70 @@ public sealed class OceanMainWindow : Window, IDisposable
                 ImGui.TextColored(T.TextMuted, Loc.T("Kein Fisch geplant", "No fish planned"));
         }
 
-        var tilesY = nextUpY + nextUpRowHeight + 12f * scale;
+        var afterNextUpY = nextUpY + nextUpRowHeight + 12f * scale;
+
+        // Nutzeranforderung: Warnzeile unter "Next up" mit den konkret fehlenden/deaktivierten
+        // Plugins und einem Link zur Plugins-Seite - nur sichtbar, solange blocked.
+        if (blocked)
+        {
+            var warnWidth = leftWidth - padX * 2f;
+            var warnOrigin = new Vector2(leftOrigin.X, afterNextUpY);
+            dl.AddRectFilled(warnOrigin, warnOrigin + new Vector2(warnWidth, blockedRowHeight), ImGui.GetColorU32(T.BgInput), UiMetrics.ControlRadius * scale);
+            dl.AddRect(warnOrigin, warnOrigin + new Vector2(warnWidth, blockedRowHeight), ImGui.GetColorU32(PluginBlockedBorder), UiMetrics.ControlRadius * scale);
+
+            var warnIconSize = blockedRowTextHeight * 0.85f;
+            var warnIconPos = warnOrigin + new Vector2(10f * scale, (blockedRowHeight - warnIconSize) / 2f);
+            UiIcons.Draw(UiIcon.Warning, warnIconPos, warnIconSize, ImGui.GetColorU32(FishDataCoralRed));
+
+            var linkLabel = Loc.T("Plugins öffnen →", "Open Plugins →");
+            float linkWidth;
+            using (StartAreaFont.Push())
+                linkWidth = ImGui.CalcTextSize(linkLabel).X;
+
+            var textStartX = warnIconPos.X + warnIconSize + 8f * scale;
+            var textEndX = warnOrigin.X + warnWidth - 14f * scale - linkWidth - 10f * scale;
+            var textY = warnOrigin.Y + (blockedRowHeight - blockedRowTextHeight) / 2f;
+            var segX = textStartX;
+            using (StartAreaFont.Push())
+            {
+                var problems = RequiredPlugins.Problems;
+                for (var i = 0; i < problems.Count && segX < textEndX; i++)
+                {
+                    if (i > 0)
+                    {
+                        const string sep = " · ";
+                        dl.AddText(new Vector2(segX, textY), ImGui.GetColorU32(T.TextMuted), sep);
+                        segX += ImGui.CalcTextSize(sep).X;
+                    }
+
+                    var (displayName, problemStatus) = problems[i];
+                    var nameColor = problemStatus == RequiredPluginStatus.Missing ? FishDataCoralRed : PluginDisabledYellow;
+                    dl.AddText(new Vector2(segX, textY), ImGui.GetColorU32(nameColor), displayName);
+                    segX += ImGui.CalcTextSize(displayName).X;
+
+                    var suffix = problemStatus == RequiredPluginStatus.Missing
+                        ? Loc.T(" ist nicht installiert", " is not installed")
+                        : Loc.T(" ist deaktiviert", " is disabled");
+                    dl.AddText(new Vector2(segX, textY), ImGui.GetColorU32(T.TextSecondary), suffix);
+                    segX += ImGui.CalcTextSize(suffix).X;
+                }
+
+                var linkPos = new Vector2(warnOrigin.X + warnWidth - 14f * scale - linkWidth, textY);
+                dl.AddText(linkPos, ImGui.GetColorU32(T.Accent), linkLabel);
+                ImGui.SetCursorScreenPos(linkPos);
+                if (ImGui.InvisibleButton("##OceanStartOpenPlugins", new Vector2(linkWidth, blockedRowTextHeight)) )
+                    currentPage = AppPage.Plugins;
+                if (ImGui.IsItemHovered())
+                    ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            }
+        }
+
+        var tilesY = afterNextUpY + (blocked ? blockedRowHeight + 12f * scale : 0f);
         var tileGap = 10f * scale;
         var tileWidth = (leftWidth - padX * 2f - tileGap * 2f) / 3f;
 
-        var prepValue = hasNext ? FormatStartCountdownValue(planned[0].FishUtc, planned[0].Window, now, isPrep: true) : "-";
-        var windowValue = hasNext ? FormatStartCountdownValue(planned[0].FishUtc, planned[0].Window, now, isPrep: false) : "-";
+        var prepValue = hasNext ? FormatStartCountdownValue(planned[0].Fish, planned[0].FishUtc, planned[0].Window, now, isPrep: true) : "-";
+        var windowValue = hasNext ? FormatStartCountdownValue(planned[0].Fish, planned[0].FishUtc, planned[0].Window, now, isPrep: false) : "-";
         var presetValue = hasNext
             ? plugin.Configuration.FishAutoHookPresets.GetValueOrDefault(planned[0].Fish.ItemId) ?? Loc.T("Kein Preset", "No preset")
             : "-";
@@ -1068,32 +1181,39 @@ public sealed class OceanMainWindow : Window, IDisposable
         UiWidgetsExtra.InfoTile(Loc.T("AutoHook-Preset", "AutoHook preset"), presetValue, scale, StartTileLabelFont, StartTileValueFont, tileWidth, FishDataTextButton);
 
         // ---- Rechte Spalte zeichnen ----
-        var canStart = automation.HasEnabledFish;
+        var hasEnabledFish = automation.HasEnabledFish;
+        var canStart = hasEnabledFish && !blocked;
         var buttonWidth = rightWidth - padX * 2f;
         var buttonOrigin = new Vector2(rightOrigin.X + padX, rightOrigin.Y + (( stacked ? rightHeight : cardHeight) - rightContentHeight) / 2f);
 
-        var buttonColor = running ? FishDataCoralRed : T.Accent;
-        var buttonTextColor = running ? StartStopTextColor : T.TextOnAccent;
+        var buttonColor = blocked ? T.BgToggleOff : running ? FishDataCoralRed : T.Accent;
+        var buttonTextColor = blocked ? T.TextMuted : running ? StartStopTextColor : T.TextOnAccent;
         var buttonDisabled = !running && !canStart;
 
-        var glowPad = 4f * scale;
-        dl.AddRectFilled(buttonOrigin - new Vector2(glowPad), buttonOrigin + new Vector2(buttonWidth, buttonHeight) + new Vector2(glowPad),
-            ImGui.GetColorU32(buttonColor with { W = 0.15f }), (UiMetrics.CardRadius + 2f) * scale);
+        // Nutzeranforderung: beim blockierten Zustand KEIN Leuchten (das wäre für einen schlicht
+        // gesperrten, grauen Knopf unpassend) - sonst wie bisher.
+        if (!blocked)
+        {
+            var glowPad = 4f * scale;
+            dl.AddRectFilled(buttonOrigin - new Vector2(glowPad), buttonOrigin + new Vector2(buttonWidth, buttonHeight) + new Vector2(glowPad),
+                ImGui.GetColorU32(buttonColor with { W = 0.15f }), (UiMetrics.CardRadius + 2f) * scale);
+        }
 
         ImGui.SetCursorScreenPos(buttonOrigin);
         if (buttonDisabled)
             ImGui.BeginDisabled();
         var buttonClicked = ImGui.InvisibleButton("##OceanStartButton", new Vector2(buttonWidth, buttonHeight));
-        var buttonHovered = ImGui.IsItemHovered();
+        // AllowWhenDisabled, damit der Tooltip (siehe unten) auch im gesperrten Zustand erscheint.
+        var buttonHovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled);
         if (buttonDisabled)
             ImGui.EndDisabled();
 
-        dl.AddRectFilled(buttonOrigin, buttonOrigin + new Vector2(buttonWidth, buttonHeight),
-            ImGui.GetColorU32(buttonDisabled ? buttonColor with { W = 0.35f } : buttonColor with { W = buttonHovered ? 0.85f : 1f }), UiMetrics.CardRadius * scale);
-        var buttonBorder = new Vector4(buttonColor.X * 0.6f, buttonColor.Y * 0.6f, buttonColor.Z * 0.6f, 1f);
+        var buttonFillAlpha = blocked ? 1f : buttonDisabled ? 0.35f : buttonHovered ? 0.85f : 1f;
+        dl.AddRectFilled(buttonOrigin, buttonOrigin + new Vector2(buttonWidth, buttonHeight), ImGui.GetColorU32(buttonColor with { W = buttonFillAlpha }), UiMetrics.CardRadius * scale);
+        var buttonBorder = blocked ? T.LineFrame : new Vector4(buttonColor.X * 0.6f, buttonColor.Y * 0.6f, buttonColor.Z * 0.6f, 1f);
         dl.AddRect(buttonOrigin, buttonOrigin + new Vector2(buttonWidth, buttonHeight), ImGui.GetColorU32(buttonBorder), UiMetrics.CardRadius * scale, ImDrawFlags.None, 1.5f * scale);
 
-        var buttonIcon = running ? UiIcon.Stop : UiIcon.Play;
+        var buttonIcon = blocked ? UiIcon.Lock : running ? UiIcon.Stop : UiIcon.Play;
         var buttonLabel = running ? Loc.T("Stopp", "Stop") : Loc.T("Start", "Start");
         float labelWidth;
         using (StartButtonFont.Push())
@@ -1108,6 +1228,8 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         if (buttonHovered && !buttonDisabled)
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        if (buttonHovered && blocked)
+            ImGui.SetTooltip(RequiredPlugins.BuildBlockedTooltip());
 
         if (buttonClicked && !buttonDisabled)
         {
@@ -1123,11 +1245,13 @@ public sealed class OceanMainWindow : Window, IDisposable
             }
         }
 
-        var hint = !canStart
-            ? Loc.T("Zuerst einen Fisch in Fish Data planen.", "Plan a fish in Fish Data first.")
-            : running
-                ? Loc.T("Stoppt sofort.", "Stops immediately.")
-                : Loc.T("Startet mit dem ersten Fisch der Liste.", "Starts with the first fish in the list.");
+        var hint = blocked
+            ? Loc.T("Verfügbar, sobald alle Plugins bereit sind.", "Unlocks once all plugins are ready.")
+            : !hasEnabledFish
+                ? Loc.T("Zuerst einen Fisch in Fish Data planen.", "Plan a fish in Fish Data first.")
+                : running
+                    ? Loc.T("Stoppt sofort.", "Stops immediately.")
+                    : Loc.T("Startet mit dem ersten Fisch der Liste.", "Starts with the first fish in the list.");
         var hintY = buttonOrigin.Y + buttonHeight + 10f * scale;
         float hintWidth;
         using (StartHintFont.Push())
@@ -1139,8 +1263,14 @@ public sealed class OceanMainWindow : Window, IDisposable
         ImGui.SetCursorScreenPos(cardOrigin + new Vector2(0f, cardHeight));
     }
 
-    private static string FormatStartCountdownValue(DateTime fishUtc, FishWindow window, DateTime now, bool isPrep)
+    private static string FormatStartCountdownValue(BigFish fish, DateTime fishUtc, FishWindow window, DateTime now, bool isPrep)
     {
+        // Nutzer-Report: zeigte bei "immer verfügbaren" Fischen (kein echtes Zeitfenster, siehe
+        // FishWindows.IsAlwaysAvailable) einen (riesigen, da window.EndUtc ~97 Tage in der Zukunft
+        // liegt) Countdown statt "Immer verfügbar" anzuzeigen.
+        if (FishWindows.IsAlwaysAvailable(fish))
+            return Loc.T("Immer verfügbar", "Always available");
+
         if (isPrep)
         {
             if (window.IsActive(now))
@@ -1150,8 +1280,11 @@ public sealed class OceanMainWindow : Window, IDisposable
                 : Loc.T($"in {FormatCountdown(fishUtc - now)}", $"in {FormatCountdown(fishUtc - now)}");
         }
 
+        // Nutzeranforderung: "in X" nur anzeigen, solange auf das Fenster GEWARTET wird - ist es schon
+        // aktiv, nicht mehr "in X" (klingt nach einer noch bevorstehenden Zeit), sondern wie in Fish
+        // Data ("Aktiv · X übrig").
         return window.IsActive(now)
-            ? Loc.T($"in {FormatCountdown(window.EndUtc - now)}", $"in {FormatCountdown(window.EndUtc - now)}")
+            ? Loc.T($"Aktiv · {FormatCountdown(window.EndUtc - now)} übrig", $"Active · {FormatCountdown(window.EndUtc - now)} left")
             : Loc.T($"in {FormatCountdown(window.StartUtc - now)}", $"in {FormatCountdown(window.StartUtc - now)}");
     }
 
@@ -1418,7 +1551,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         using (StartRowValueFont.Push())
         {
             ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (effRowHeight - ImGui.GetTextLineHeight()) / 2f);
-            ImGui.TextColored(isFirst ? T.TextHeading : FishDataTextButton, FormatStartCountdownValue(entry.FishUtc, entry.Window, now, isPrep: true));
+            ImGui.TextColored(isFirst ? T.TextHeading : FishDataTextButton, FormatStartCountdownValue(fish, entry.FishUtc, entry.Window, now, isPrep: true));
         }
 
         ImGui.TableSetColumnIndex(4);
@@ -1427,7 +1560,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         using (StartRowValueFont.Push())
         {
             ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (effRowHeight - ImGui.GetTextLineHeight()) / 2f);
-            ImGui.TextColored(isFirst ? T.TextHeading : FishDataTextButton, FormatStartCountdownValue(entry.FishUtc, entry.Window, now, isPrep: false));
+            ImGui.TextColored(isFirst ? T.TextHeading : FishDataTextButton, FormatStartCountdownValue(fish, entry.FishUtc, entry.Window, now, isPrep: false));
         }
 
         ImGui.TableSetColumnIndex(5);
@@ -1752,30 +1885,8 @@ public sealed class OceanMainWindow : Window, IDisposable
     // Aus dem gelöschten alten Menü (MainWindow.cs) hierher übernommen - das alte Menü ist mit der
     // Abnahme des neuen Ocean-UI entfallen (Nutzeranforderung "altes Menü löschen"), diese Hilfen
     // werden aber weiterhin gebraucht (Plugins-Seite hier, Fish-Data-/Start-Tabellen, Status-Overlay).
-    internal static string MissingPluginText => Loc.T("Ein benötigtes Plugin fehlt (siehe Plugins).", "A required plugin is missing (see Plugins).");
-
-    internal static readonly (string InternalName, string DisplayName, string DescriptionDe, string DescriptionEn, bool Required)[] Dependencies =
-    {
-        ("AutoHook", "AutoHook",
-            "Übernimmt das eigentliche Angeln (Haken, Köder, Aktionen) für den Big Fish Helper.",
-            "Handles the actual fishing (hooking, bait, actions) for the Big Fish Helper.",
-            true),
-        ("vnavmesh", "vnavmesh",
-            "Fliegt die Automation zur Angel-Position des Fischs.",
-            "Flies the automation to the fish's fishing position.",
-            true),
-        ("Lifestream", "Lifestream",
-            "Teleportiert zum nächsten Ätheriten, wenn der Fisch in einer anderen Zone ist.",
-            "Teleports to the nearest aetheryte when the fish is in another zone.",
-            true),
-    };
-
-    /// <summary>Ob ein als "Required" markiertes Plugin nicht installiert/geladen ist (Hinweis im Titel + Punkt am Plugins-Icon).</summary>
-    internal static bool HasMissingRequiredDependency() =>
-        Dependencies.Any(d => d.Required && !IsPluginLoaded(d.InternalName));
-
-    internal static bool IsPluginLoaded(string internalName) =>
-        Plugin.PluginInterface.InstalledPlugins.Any(p => p.InternalName == internalName && p.IsLoaded);
+    /// <summary>Siehe RequiredPlugins-Klassenkommentar - zentrale Installed/Disabled/Missing-Prüfung, ersetzt die frühere rein boolesche hier.</summary>
+    internal static string MissingPluginText => Loc.T("Ein benötigtes Plugin fehlt oder ist deaktiviert (siehe Plugins).", "A required plugin is missing or disabled (see Plugins).");
 
     /// <summary>Dauer als Countdown: "hh:mm:ss", ab einem Tag mit vorangestellten Tagen.</summary>
     internal static string FormatCountdown(TimeSpan span)
@@ -1793,8 +1904,8 @@ public sealed class OceanMainWindow : Window, IDisposable
         DrawPluginsStatusBanner(scale, width);
         ImGui.Dummy(new Vector2(0f, 18f * scale));
 
-        var required = Dependencies.Where(d => d.Required).ToArray();
-        var optional = Dependencies.Where(d => !d.Required).ToArray();
+        var required = RequiredPlugins.Dependencies.Where(d => d.Required).ToArray();
+        var optional = RequiredPlugins.Dependencies.Where(d => !d.Required).ToArray();
 
         DrawPluginGroup(scale, Loc.T("ERFORDERLICH", "REQUIRED"), required, width);
         if (optional.Length > 0)
@@ -1804,16 +1915,22 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
     }
 
+    /// <summary>
+    /// Nutzeranforderung: statt der bisherigen einfachen "fehlt X"-Zeile jetzt ein eigener Hinweis mit
+    /// Titel+Untertitel+Ghost-Knopf zum Dalamud-Plugin-Installer, sobald IRGENDETWAS (fehlend ODER
+    /// deaktiviert) nicht bereit ist - der bisherige grüne "Alles erfüllt"-Zustand bleibt unverändert.
+    /// </summary>
     private static void DrawPluginsStatusBanner(float scale, float width)
     {
         var T = UiTheme.Active;
-        var total = Dependencies.Length;
-        var installedCount = Dependencies.Count(d => IsPluginLoaded(d.InternalName));
-        var ready = !HasMissingRequiredDependency();
+        var total = RequiredPlugins.Dependencies.Length;
+        var installedCount = RequiredPlugins.Dependencies.Count(d => RequiredPlugins.GetStatus(d.InternalName) == RequiredPluginStatus.Installed);
+        var ready = RequiredPlugins.AllReady;
+        var problemCount = RequiredPlugins.ProblemCount;
 
-        var bg = ready ? T.OkBg : T.WarnBg;
-        var border = ready ? T.OkLine : T.WarnLine;
-        var fg = ready ? T.OkFg : T.WarnFg;
+        var bg = ready ? T.OkBg : FishDataCoralRed with { W = 0.08f };
+        var border = ready ? T.OkLine : PluginBlockedBorder;
+        var fg = ready ? T.OkFg : FishDataCoralRed;
 
         string boldPart, restPart;
         if (ready)
@@ -1823,11 +1940,10 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
         else
         {
-            var missingNames = Dependencies
-                .Where(d => d.Required && !IsPluginLoaded(d.InternalName))
-                .Select(d => d.DisplayName);
-            boldPart = Loc.T($"Fehlt: {string.Join(", ", missingNames)}.", $"Missing: {string.Join(", ", missingNames)}.");
-            restPart = Loc.T("Automation ist deaktiviert, bis es installiert ist.", "Automation is disabled until it is installed.");
+            boldPart = Loc.T(
+                $"{problemCount} Plugin(s) benötigen Aufmerksamkeit - Automation kann nicht starten",
+                $"{problemCount} plugin{(problemCount == 1 ? "" : "s")} need attention - automation can't start");
+            restPart = Loc.T("Installiere oder aktiviere sie, dann ist Start wieder verfügbar. Kein Neustart nötig.", "Install or enable them, then Start is available again. No restart needed.");
         }
 
         var paddingX = 16f * scale;
@@ -1836,26 +1952,64 @@ public sealed class OceanMainWindow : Window, IDisposable
         using (FieldLabelFont.Push())
             textHeight = ImGui.GetFontSize();
         var iconSize = 18f * scale;
-        var rowHeight = MathF.Max(iconSize, textHeight) + paddingY * 2f;
+
+        // Platz für den Ghost-Knopf rechts reservieren, solange nicht alles bereit ist - Breite über
+        // LogGhostButtonFont gemessen (siehe DrawLogGhostButton-Kommentar: fester Höhenwert 31*scale,
+        // Breite = Textbreite + 12*scale Innenabstand je Seite - dieselbe Formel wie DrawLogMetaRow).
+        var buttonLabel = Loc.T("/xlplugins öffnen", "Open /xlplugins");
+        Vector2 buttonSize = default;
+        if (!ready)
+        {
+            using (LogGhostButtonFont.Push())
+                buttonSize = new Vector2(ImGui.CalcTextSize(buttonLabel).X + 12f * scale * 2f, 31f * scale);
+        }
+
+        var rowHeight = MathF.Max(MathF.Max(iconSize, textHeight) + paddingY * 2f, buttonSize.Y + paddingY * 2f);
 
         var cursor = ImGui.GetCursorScreenPos();
         var dl = ImGui.GetWindowDrawList();
         dl.AddRectFilled(cursor, cursor + new Vector2(width, rowHeight), ImGui.GetColorU32(bg), UiMetrics.CardRadius * scale);
         dl.AddRect(cursor, cursor + new Vector2(width, rowHeight), ImGui.GetColorU32(border), UiMetrics.CardRadius * scale);
 
-        // Gefüllter Kreis (fg-Farbe) mit Haken/Kreuz in BgWindow darin - 1:1 wie CodexMenuWindow's
+        // Gefüllter Kreis (fg-Farbe) mit Haken/Warndreieck in BgWindow darin - 1:1 wie CodexMenuWindow's
         // CheckCircle/ExclamationTriangle-Icon, nur von Hand gezeichnet statt FontAwesome-Glyph.
         var iconCenter = cursor + new Vector2(paddingX + iconSize / 2f, rowHeight / 2f);
         dl.AddCircleFilled(iconCenter, iconSize / 2f, ImGui.GetColorU32(fg), 24);
         var glyphSize = iconSize * 0.55f;
-        UiIcons.Draw(ready ? UiIcon.Check : UiIcon.Cross, iconCenter - new Vector2(glyphSize / 2f), glyphSize, ImGui.GetColorU32(T.BgWindow));
+        UiIcons.Draw(ready ? UiIcon.Check : UiIcon.Warning, iconCenter - new Vector2(glyphSize / 2f), glyphSize, ImGui.GetColorU32(T.BgWindow));
 
-        ImGui.SetCursorScreenPos(cursor + new Vector2(paddingX + iconSize + 10f * scale, (rowHeight - textHeight) / 2f));
-        using (FieldLabelFont.Push())
-            ImGui.TextColored(fg, boldPart);
-        ImGui.SameLine(0f, 8f * scale);
-        using (DropdownCaptionFont.Push())
-            ImGui.TextColored(T.TextPrimary, restPart);
+        var textX = cursor.X + paddingX + iconSize + 10f * scale;
+        if (ready)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(textX, cursor.Y + (rowHeight - textHeight) / 2f));
+            using (FieldLabelFont.Push())
+                ImGui.TextColored(fg, boldPart);
+            ImGui.SameLine(0f, 8f * scale);
+            using (DropdownCaptionFont.Push())
+                ImGui.TextColored(T.TextPrimary, restPart);
+        }
+        else
+        {
+            float boldHeight, restHeight;
+            using (FieldLabelFont.Push())
+                boldHeight = ImGui.GetTextLineHeight();
+            using (DropdownCaptionFont.Push())
+                restHeight = ImGui.GetTextLineHeight();
+            var textBlockHeight = boldHeight + 3f * scale + restHeight;
+            var textTop = cursor.Y + (rowHeight - textBlockHeight) / 2f;
+
+            ImGui.SetCursorScreenPos(new Vector2(textX, textTop));
+            using (FieldLabelFont.Push())
+                ImGui.TextColored(fg, boldPart);
+            ImGui.SetCursorScreenPos(new Vector2(textX, textTop + boldHeight + 3f * scale));
+            using (DropdownCaptionFont.Push())
+                ImGui.TextColored(T.TextSecondary, restPart);
+
+            var buttonPos = new Vector2(cursor.X + width - buttonSize.X - paddingX, cursor.Y + (rowHeight - buttonSize.Y) / 2f);
+            ImGui.SetCursorScreenPos(buttonPos);
+            if (DrawLogGhostButton(scale, "##OceanPluginsOpenInstaller", buttonLabel, buttonSize.X, active: false))
+                Plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.InstalledPlugins);
+        }
 
         ImGui.SetCursorScreenPos(cursor + new Vector2(0f, rowHeight));
     }
@@ -1863,7 +2017,7 @@ public sealed class OceanMainWindow : Window, IDisposable
     private static void DrawPluginGroup(float scale, string title, (string InternalName, string DisplayName, string DescriptionDe, string DescriptionEn, bool Required)[] entries, float width)
     {
         var T = UiTheme.Active;
-        var installedCount = entries.Count(e => IsPluginLoaded(e.InternalName));
+        var installedCount = entries.Count(e => RequiredPlugins.GetStatus(e.InternalName) == RequiredPluginStatus.Installed);
         var allInstalled = installedCount == entries.Length;
 
         var titleStartY = ImGui.GetCursorPosY();
@@ -1875,11 +2029,12 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
 
         // Zählungs-Badge rechts neben dem Titel ("5 / 5") - 1:1 wie CodexMenuWindow.DrawPluginGroupHeader.
+        // Nutzeranforderung: Rot (Err), sobald in dieser Gruppe etwas fehlt/deaktiviert ist.
         ImGui.SameLine(0f, 10f * scale);
         var badgeText = $"{installedCount} / {entries.Length}";
-        var badgeFg = allInstalled ? T.TextCardTitle : T.WarnFg;
-        var badgeBorder = allInstalled ? T.LineFrame : T.WarnLine;
-        var badgeBg = allInstalled ? T.BgSelected : T.WarnBg;
+        var badgeFg = allInstalled ? T.TextCardTitle : FishDataCoralRed;
+        var badgeBorder = allInstalled ? T.LineFrame : PluginBlockedBorder;
+        var badgeBg = allInstalled ? T.BgSelected : FishDataCoralRed with { W = 0.08f };
         float badgeHeight;
         using (DropdownCaptionFont.Push())
             badgeHeight = ImGui.GetTextLineHeight() + 2f * scale * 2f;
@@ -1900,7 +2055,7 @@ public sealed class OceanMainWindow : Window, IDisposable
             for (var i = 0; i < entries.Length; i++)
             {
                 var entry = entries[i];
-                DrawPluginRow(scale, entry.DisplayName, Loc.T(entry.DescriptionDe, entry.DescriptionEn), IsPluginLoaded(entry.InternalName));
+                DrawPluginRow(scale, entry.InternalName, entry.DisplayName, Loc.T(entry.DescriptionDe, entry.DescriptionEn), RequiredPlugins.GetStatus(entry.InternalName));
                 if (i < entries.Length - 1)
                     UiWidgets.CardDivider(scale);
             }
@@ -1909,12 +2064,12 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
     }
 
-    /// <summary>Eine Abhängigkeit als Zeile - Status-Kreis + Name+Beschreibung links, rechts ein Installiert-Haken bzw. "Installieren"-Knopf
-    /// (öffnet den Dalamud-Plugin-Installer) - 1:1 wie CodexMenuWindow's DrawPluginRow, nur mit von Hand gezeichnetem Status-Kreis statt
-    /// FontAwesome-Glyph. "drawDivider: false" (siehe UiWidgets.BeginSettingRow) - die Trennung zwischen Zeilen kommt bereits von der
+    /// <summary>Eine Abhängigkeit als Zeile - Status-Kreis + Name+Beschreibung links, rechts je nach Status (Installed/Disabled/Missing)
+    /// ein Haken, ein "Enable"-Ghost-Knopf oder ein "Install"-Accent-Knopf (öffnet den Dalamud-Plugin-Installer) - 1:1 wie
+    /// CodexMenuWindow's DrawPluginRow für den Installed-Fall, Disabled/Missing neu (Nutzeranforderung: 3 statt 2 Zustände
+    /// sichtbar machen). "drawDivider: false" (siehe UiWidgets.BeginSettingRow) - die Trennung zwischen Zeilen kommt bereits von der
     /// UiWidgets.CardDivider zwischen den Aufrufen (siehe DrawPluginGroup), eine zweite eigene Trennlinie würde den Zeilenabstand verdoppeln.</summary>
-    /// <summary>1:1 CodexMenuWindow.DrawPluginRow (dieselben Schriftgrößen/Zeilenhöhen-Formel/Abstände), nur mit von Hand gezeichneten Icons statt FontAwesome.</summary>
-    private static void DrawPluginRow(float scale, string name, string description, bool installed)
+    private static void DrawPluginRow(float scale, string internalName, string name, string description, RequiredPluginStatus status)
     {
         var T = UiTheme.Active;
         var rowStartY = ImGui.GetCursorPosY();
@@ -1932,8 +2087,22 @@ public sealed class OceanMainWindow : Window, IDisposable
         var verticalPadding = 3f * scale;
         var height = MathF.Max(dotSize, textBlockHeight) + verticalPadding * 2f - 17f * scale;
 
+        // Nutzeranforderung: Disabled/Missing-Zeilen bekommen einen 2px farbigen Balken links + einen
+        // leicht getönten Hintergrund (4%/5%) über die volle Zeilenbreite, Installed bleibt wie bisher
+        // ohne Hintergrund-Tönung.
+        if (status != RequiredPluginStatus.Installed)
+        {
+            var barColor = status == RequiredPluginStatus.Disabled ? PluginDisabledYellow : FishDataCoralRed;
+            var tintColor = status == RequiredPluginStatus.Disabled ? PluginDisabledYellow with { W = 0.04f } : FishDataCoralRed with { W = 0.05f };
+            var rowMin = ImGui.GetCursorScreenPos();
+            var rowMax = rowMin + new Vector2(rightEdge - rowStartX, height);
+            var dl = ImGui.GetWindowDrawList();
+            dl.AddRectFilled(rowMin, rowMax, ImGui.GetColorU32(tintColor));
+            dl.AddRectFilled(rowMin, rowMin + new Vector2(2f * scale, height), ImGui.GetColorU32(barColor));
+        }
+
         ImGui.SetCursorPosY(rowStartY + (height - dotSize) / 2f);
-        DrawPluginStatusDot(scale, installed);
+        DrawPluginStatusDot(scale, status);
 
         ImGui.SameLine(0f, 12f * scale);
         var textX = ImGui.GetCursorPosX();
@@ -1946,55 +2115,107 @@ public sealed class OceanMainWindow : Window, IDisposable
         using (PluginDescriptionFont.Push())
             ImGui.TextColored(T.TextMuted, description);
 
-        if (installed)
+        switch (status)
         {
-            var label = Loc.T("Installiert", "Installed");
-            float labelWidth, textHeight;
-            using (PluginInstalledLabelFont.Push())
+            case RequiredPluginStatus.Installed:
             {
-                var size = ImGui.CalcTextSize(label);
-                labelWidth = size.X;
-                textHeight = size.Y;
-            }
-            var checkSize = textHeight;
-            var gap = 5f * scale;
-            var rightX = rightEdge - checkSize - gap - labelWidth - 20f * scale;
-            var checkPos = new Vector2(rightX, rowStartY + (height - checkSize) / 2f);
-            ImGui.SetCursorPos(checkPos);
-            UiIcons.Draw(UiIcon.Check, ImGui.GetCursorScreenPos(), checkSize, ImGui.GetColorU32(T.OkFg));
+                var label = Loc.T("Installiert", "Installed");
+                float labelWidth, textHeight;
+                using (PluginInstalledLabelFont.Push())
+                {
+                    var size = ImGui.CalcTextSize(label);
+                    labelWidth = size.X;
+                    textHeight = size.Y;
+                }
+                var checkSize = textHeight;
+                var gap = 5f * scale;
+                var rightX = rightEdge - checkSize - gap - labelWidth - 20f * scale;
+                var checkPos = new Vector2(rightX, rowStartY + (height - checkSize) / 2f);
+                ImGui.SetCursorPos(checkPos);
+                UiIcons.Draw(UiIcon.Check, ImGui.GetCursorScreenPos(), checkSize, ImGui.GetColorU32(T.OkFg));
 
-            ImGui.SetCursorPos(new Vector2(rightX + checkSize + gap, rowStartY + (height - textHeight) / 2f));
-            using (PluginInstalledLabelFont.Push())
-                ImGui.TextColored(T.OkFg, label);
-        }
-        else
-        {
-            var buttonSize = MeasureInstallButton(scale);
-            var rightX = rightEdge - buttonSize.X - 20f * scale;
-            ImGui.SetCursorPos(new Vector2(rightX, rowStartY + (height - buttonSize.Y) / 2f));
-            if (DrawInstallButton(scale, $"##OceanPluginInstall{name}", buttonSize))
-                Plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.AllPlugins, name);
+                ImGui.SetCursorPos(new Vector2(rightX + checkSize + gap, rowStartY + (height - textHeight) / 2f));
+                using (PluginInstalledLabelFont.Push())
+                    ImGui.TextColored(T.OkFg, label);
+                break;
+            }
+
+            case RequiredPluginStatus.Disabled:
+            {
+                var label = Loc.T("Deaktiviert", "Disabled");
+                float labelWidth;
+                using (PluginInstalledLabelFont.Push())
+                    labelWidth = ImGui.CalcTextSize(label).X;
+
+                var buttonLabel = Loc.T("Aktivieren", "Enable");
+                float buttonWidth;
+                using (LogGhostButtonFont.Push())
+                    buttonWidth = ImGui.CalcTextSize(buttonLabel).X + 12f * scale * 2f;
+                var buttonHeight = 31f * scale;
+                var gap = 10f * scale;
+                var rightX = rightEdge - buttonWidth - 20f * scale;
+                ImGui.SetCursorPos(new Vector2(rightX, rowStartY + (height - buttonHeight) / 2f));
+                if (DrawLogGhostButton(scale, $"##OceanPluginEnable{internalName}", buttonLabel, buttonWidth, active: false, textColor: PluginDisabledYellow))
+                    Plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.InstalledPlugins, name);
+
+                var labelX = rightX - gap - labelWidth;
+                float textHeight;
+                using (PluginInstalledLabelFont.Push())
+                    textHeight = ImGui.CalcTextSize(label).Y;
+                ImGui.SetCursorPos(new Vector2(labelX, rowStartY + (height - textHeight) / 2f));
+                using (PluginInstalledLabelFont.Push())
+                    ImGui.TextColored(PluginDisabledYellow, label);
+                break;
+            }
+
+            default: // Missing
+            {
+                var label = Loc.T("Nicht installiert", "Not installed");
+                float labelWidth;
+                using (PluginInstalledLabelFont.Push())
+                    labelWidth = ImGui.CalcTextSize(label).X;
+
+                var buttonSize = MeasureInstallButton(scale);
+                var gap = 10f * scale;
+                var rightX = rightEdge - buttonSize.X - 20f * scale;
+                ImGui.SetCursorPos(new Vector2(rightX, rowStartY + (height - buttonSize.Y) / 2f));
+                if (DrawInstallButton(scale, $"##OceanPluginInstall{internalName}", buttonSize))
+                    Plugin.PluginInterface.OpenPluginInstallerTo(PluginInstallerOpenKind.AllPlugins, name);
+
+                var labelX = rightX - gap - labelWidth;
+                float textHeight;
+                using (PluginInstalledLabelFont.Push())
+                    textHeight = ImGui.CalcTextSize(label).Y;
+                ImGui.SetCursorPos(new Vector2(labelX, rowStartY + (height - textHeight) / 2f));
+                using (PluginInstalledLabelFont.Push())
+                    ImGui.TextColored(FishDataCoralRed, label);
+                break;
+            }
         }
 
         ImGui.SetCursorPosY(rowStartY + height);
     }
 
-    private static void DrawPluginStatusDot(float scale, bool installed)
+    /// <summary>Nutzeranforderung: 3 statt 2 Varianten - Installed (türkis/Haken), Disabled (gelb/Pause), Missing (koralle/X).</summary>
+    private static void DrawPluginStatusDot(float scale, RequiredPluginStatus status)
     {
         var T = UiTheme.Active;
         var size = new Vector2(26f * scale, 26f * scale);
         var cursor = ImGui.GetCursorScreenPos();
         var dl = ImGui.GetWindowDrawList();
 
-        var bg = installed ? T.OkBg : T.LineRow;
-        var border = installed ? T.OkLine : T.LineControl;
-        var fg = installed ? T.OkFg : T.TextMuted;
+        var (bg, border, fg, icon) = status switch
+        {
+            RequiredPluginStatus.Installed => (T.OkBg, T.OkLine, T.OkFg, UiIcon.Check),
+            RequiredPluginStatus.Disabled => (PluginDisabledYellow with { W = 0.16f }, PluginDisabledYellow, PluginDisabledYellow, UiIcon.Pause),
+            _ => (FishDataCoralRed with { W = 0.16f }, FishDataCoralRed, FishDataCoralRed, UiIcon.Cross),
+        };
 
         dl.AddCircleFilled(cursor + size / 2f, size.X / 2f, ImGui.GetColorU32(bg));
         dl.AddCircle(cursor + size / 2f, size.X / 2f, ImGui.GetColorU32(border));
 
         var glyphSize = 15f * scale;
-        UiIcons.Draw(installed ? UiIcon.Check : UiIcon.Cross, cursor + (size - new Vector2(glyphSize)) / 2f, glyphSize, ImGui.GetColorU32(fg));
+        UiIcons.Draw(icon, cursor + (size - new Vector2(glyphSize)) / 2f, glyphSize, ImGui.GetColorU32(fg));
 
         ImGui.Dummy(size);
     }
@@ -2012,10 +2233,13 @@ public sealed class OceanMainWindow : Window, IDisposable
             textHeight = size.Y;
         }
 
-        return new Vector2(padding.X * 2f + labelWidth, padding.Y * 2f + textHeight);
+        var iconSize = textHeight;
+        var iconGap = 6f * scale;
+        return new Vector2(padding.X * 2f + iconSize + iconGap + labelWidth, padding.Y * 2f + textHeight);
     }
 
-    /// <summary>Install-Knopf AM AKTUELLEN Cursor (vom Aufrufer vorher per SetCursorPos positioniert) - 1:1 CodexMenuWindow.DrawInstallButton, nur ohne das Download-Icon (keine Icon-Schriftart im Ocean-Look).</summary>
+    /// <summary>Install-Knopf AM AKTUELLEN Cursor (vom Aufrufer vorher per SetCursorPos positioniert) - 1:1 CodexMenuWindow.DrawInstallButton,
+    /// inklusive Download-Icon (jetzt über UiIcons.Draw/UiIcon.Download verfügbar statt einer FontAwesome-Glyphe).</summary>
     private static bool DrawInstallButton(float scale, string id, Vector2 buttonSize)
     {
         var T = UiTheme.Active;
@@ -2032,7 +2256,13 @@ public sealed class OceanMainWindow : Window, IDisposable
         using (InstallButtonLabelFont.Push())
         {
             var textSize = ImGui.CalcTextSize(label);
-            dl.AddText(cursor + (buttonSize - textSize) / 2f, ImGui.GetColorU32(T.TextOnAccent), label);
+            var iconSize = textSize.Y;
+            var iconGap = 6f * scale;
+            var contentWidth = iconSize + iconGap + textSize.X;
+            var contentX = cursor.X + (buttonSize.X - contentWidth) / 2f;
+            var contentY = cursor.Y + (buttonSize.Y - textSize.Y) / 2f;
+            UiIcons.Draw(UiIcon.Download, new Vector2(contentX, contentY), iconSize, ImGui.GetColorU32(T.TextOnAccent));
+            dl.AddText(new Vector2(contentX + iconSize + iconGap, contentY), ImGui.GetColorU32(T.TextOnAccent), label);
         }
 
         if (hovered)
@@ -4152,7 +4382,7 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         var testingThis = automation.TestTarget?.ItemId == fish.ItemId;
         var mainRunning = automation.IsRunning && automation.TestTarget == null;
-        var disabled = !testingThis && (mainRunning || HasMissingRequiredDependency() || !automation.CanFlyToFish(fish));
+        var disabled = !testingThis && (mainRunning || !RequiredPlugins.AllReady || !automation.CanFlyToFish(fish));
         var sameMap = !testingThis && Plugin.ClientState.TerritoryType == fish.TerritoryId;
         var flyColor = testingThis ? Vector4.One : sameMap ? FishDataTeleportOrange : FishDataTeleportBlue;
 
@@ -4186,7 +4416,7 @@ public sealed class OceanMainWindow : Window, IDisposable
                 ? $"{Loc.T("Stopp", "Stop")}\n{automation.StatusText}"
                 : mainRunning
                     ? Loc.T("Nicht möglich, während die Automation läuft.", "Not possible while the automation is running.")
-                    : HasMissingRequiredDependency()
+                    : !RequiredPlugins.AllReady
                         ? MissingPluginText
                         : !automation.CanFlyToFish(fish)
                             ? Loc.T("Angel-Position unbekannt.", "Fishing spot unknown.")

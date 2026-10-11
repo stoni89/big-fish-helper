@@ -477,6 +477,24 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         if (!IsRunning)
             return;
 
+        // Nutzeranforderung: läuft die Automatik und ein benötigtes Plugin verschwindet (z.B. während
+        // der Laufzeit entladen) oder wird deaktiviert, sofort pausieren statt mit einem fehlenden
+        // Aufruf (vnavmesh/AutoHook/Lifestream) kaputt weiterzulaufen - mit Meldung in Log und Chat.
+        // Kein eigener "schon gemeldet"-Schutz nötig: Stop() setzt IsRunning=false, danach greift der
+        // frühe Abbruch oben, dieser Zweig feuert also pro Automationslauf nur genau einmal.
+        if (!RequiredPlugins.AllReady)
+        {
+            var missing = string.Join(", ", RequiredPlugins.Problems.Select(p => p.DisplayName));
+            var message = Loc.T(
+                $"Automation pausiert - benötigtes Plugin fehlt oder ist deaktiviert: {missing}.",
+                $"Automation paused - required plugin missing or disabled: {missing}.");
+            Plugin.Log.Warning($"[FishingAutomation] {message}");
+            Plugin.ChatGui.Print($"[Big Fish Helper] {message}");
+            Stop();
+            StatusText = message;
+            return;
+        }
+
         try
         {
             Tick();
