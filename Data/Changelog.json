@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.8.1",
+    "date": "2026-10-11",
+    "title": "Several Fixes",
+    "title_de": "Mehrere Fehlerbehebungen",
+    "changes": [
+      { "type": "fixed", "text": "Fishing now actually starts at the configured Prep Timer instead of waiting for the real window.", "text_de": "Das Angeln startet jetzt wirklich zum eingestellten Prep Timer statt auf den echten Fensterbeginn zu warten." },
+      { "type": "fixed", "text": "The newest line in the Log is no longer cut off.", "text_de": "Die neueste Zeile im Log wird nicht mehr abgeschnitten." }
+    ]
+  },
+  {
     "version": "1.8.0",
     "date": "2026-10-10",
     "title": "Desynthesis Removed",

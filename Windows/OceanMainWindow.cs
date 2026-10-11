@@ -2533,12 +2533,17 @@ public sealed class OceanMainWindow : Window, IDisposable
                 SetupLogTableColumns(scale);
 
                 var rowHeight = 24f * scale;
+                // Spaltenbreite der Nachrichten-Spalte vorab abgeschätzt (feste Spalten + Innenabstand,
+                // siehe SetupLogTableColumns) - wird für die letzte Zeile gebraucht, BEVOR TableNextRow
+                // aufgerufen wird (siehe DrawLogRow-Kommentar zur letzten Zeile).
+                var approxMessageColumnWidth = innerWidth - (78f + 52f + 150f) * scale
+                    - ImGui.GetStyle().CellPadding.X * 2f - 8f * scale;
                 var clipper = new ImGuiListClipper();
                 clipper.Begin(filtered.Count, rowHeight);
                 while (clipper.Step())
                 {
                     for (var i = clipper.DisplayStart; i < clipper.DisplayEnd; i++)
-                        DrawLogRow(scale, filtered, i, rowHeight);
+                        DrawLogRow(scale, filtered, i, rowHeight, approxMessageColumnWidth);
                 }
                 clipper.End();
 
@@ -2577,7 +2582,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         }
     }
 
-    private void DrawLogRow(float scale, List<LogEntry> filtered, int rowIndex, float rowHeight)
+    private void DrawLogRow(float scale, List<LogEntry> filtered, int rowIndex, float rowHeight, float approxMessageColumnWidth)
     {
         var T = UiTheme.Active;
         var entry = filtered[rowIndex];
@@ -2588,7 +2593,27 @@ public sealed class OceanMainWindow : Window, IDisposable
         var isTinted = entry.Level is LogEventLevel.Warning or LogEventLevel.Error or LogEventLevel.Fatal;
         var messageColor = isDimmed ? T.TextMuted : T.TextPrimary;
 
-        ImGui.TableNextRow(ImGuiTableRowFlags.None, rowHeight);
+        // Nutzeranforderung: die letzte (neueste) Zeile soll immer VOLLSTÄNDIG zu sehen sein, statt wie
+        // alle anderen Zeilen per TruncateToWidth gekürzt zu werden (dort reicht Hover+Tooltip, aber
+        // genau die unterste/neueste Zeile ist die, die man gerade aktiv beobachtet). Die Zeilenhöhe
+        // muss dafür VOR TableNextRow feststehen (Dear ImGui kann eine Tabellenzeile nicht nachträglich
+        // vergrößern) - daher die vorab abgeschätzte Spaltenbreite (approxMessageColumnWidth) statt der
+        // sonst üblichen, erst INNERHALB der Spalte messbaren GetContentRegionAvail().
+        var isLastRow = rowIndex == filtered.Count - 1;
+        List<string>? lastRowMessageLines = null;
+        var effectiveRowHeight = rowHeight;
+        var lastRowLineHeight = 0f;
+        if (isLastRow)
+        {
+            using (LogRowFont.Push())
+            {
+                lastRowLineHeight = ImGui.GetTextLineHeightWithSpacing();
+                lastRowMessageLines = WrapTextToWidth(message, approxMessageColumnWidth);
+            }
+            effectiveRowHeight = MathF.Max(rowHeight, lastRowMessageLines.Count * lastRowLineHeight + 6f * scale);
+        }
+
+        ImGui.TableNextRow(ImGuiTableRowFlags.None, effectiveRowHeight);
 
         var rowBg = isSelected ? T.BgSelectedStrong
             : isTinted ? levelColor with { W = 0.05f }
@@ -2598,7 +2623,7 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         ImGui.TableSetColumnIndex(0);
         var rowCursor = ImGui.GetCursorScreenPos();
-        ImGui.Selectable($"##OceanLogRow_{entry.Id}", false, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0f, rowHeight));
+        ImGui.Selectable($"##OceanLogRow_{entry.Id}", false, ImGuiSelectableFlags.SpanAllColumns, new Vector2(0f, effectiveRowHeight));
         var rowHovered = ImGui.IsItemHovered();
         var rowMin = ImGui.GetItemRectMin();
         var rowMax = ImGui.GetItemRectMax();
@@ -2619,7 +2644,7 @@ public sealed class OceanMainWindow : Window, IDisposable
         ImGui.TableSetColumnIndex(1);
         var badgeText = LogLevelBadge(entry.Level);
         var badgeSize = new Vector2(36f * scale, 16f * scale);
-        var badgeCursor = ImGui.GetCursorScreenPos() + new Vector2(0f, (rowHeight - badgeSize.Y) / 2f);
+        var badgeCursor = ImGui.GetCursorScreenPos() + new Vector2(0f, (effectiveRowHeight - badgeSize.Y) / 2f);
         var drawList = ImGui.GetWindowDrawList();
         drawList.AddRectFilled(badgeCursor, badgeCursor + badgeSize, ImGui.GetColorU32(levelColor with { W = 0.14f }), 3f * scale);
         using (LogBadgeFont.Push())
@@ -2630,7 +2655,7 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         ImGui.TableSetColumnIndex(2);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 8f * scale);
-        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (rowHeight - ImGui.GetTextLineHeight()) / 2f);
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (effectiveRowHeight - ImGui.GetTextLineHeight()) / 2f);
         using (LogRowFont.Push())
         {
             var maxWidth = ImGui.GetContentRegionAvail().X;
@@ -2640,24 +2665,37 @@ public sealed class OceanMainWindow : Window, IDisposable
 
         ImGui.TableSetColumnIndex(3);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 8f * scale);
-        var messageCellPos = ImGui.GetCursorScreenPos() + new Vector2(0f, (rowHeight - 13f * scale) / 2f);
-        float maxMessageWidth;
-        using (LogRowFont.Push())
-            maxMessageWidth = ImGui.GetContentRegionAvail().X;
-        string truncatedMessage;
-        using (LogRowFont.Push())
-            truncatedMessage = TruncateToWidth(message, maxMessageWidth);
-        DrawLogHighlightedText(messageCellPos, truncatedMessage, messageColor);
-        if (rowHovered && truncatedMessage != message)
+
+        if (isLastRow && lastRowMessageLines != null)
         {
-            ImGui.PushStyleColor(ImGuiCol.PopupBg, T.BgPopup);
-            ImGui.BeginTooltip();
-            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 40f);
+            // Siehe Kommentar oben am isLastRow-Block: hier vollständig, mehrzeilig statt gekürzt.
+            var blockTop = ImGui.GetCursorScreenPos().Y
+                + (effectiveRowHeight - lastRowMessageLines.Count * lastRowLineHeight) / 2f;
+            var messageX = ImGui.GetCursorScreenPos().X;
+            for (var li = 0; li < lastRowMessageLines.Count; li++)
+                DrawLogHighlightedText(new Vector2(messageX, blockTop + li * lastRowLineHeight), lastRowMessageLines[li], messageColor);
+        }
+        else
+        {
+            var messageCellPos = ImGui.GetCursorScreenPos() + new Vector2(0f, (rowHeight - 13f * scale) / 2f);
+            float maxMessageWidth;
             using (LogRowFont.Push())
-                ImGui.TextColored(T.TextPrimary, message);
-            ImGui.PopTextWrapPos();
-            ImGui.EndTooltip();
-            ImGui.PopStyleColor();
+                maxMessageWidth = ImGui.GetContentRegionAvail().X;
+            string truncatedMessage;
+            using (LogRowFont.Push())
+                truncatedMessage = TruncateToWidth(message, maxMessageWidth);
+            DrawLogHighlightedText(messageCellPos, truncatedMessage, messageColor);
+            if (rowHovered && truncatedMessage != message)
+            {
+                ImGui.PushStyleColor(ImGuiCol.PopupBg, T.BgPopup);
+                ImGui.BeginTooltip();
+                ImGui.PushTextWrapPos(ImGui.GetFontSize() * 40f);
+                using (LogRowFont.Push())
+                    ImGui.TextColored(T.TextPrimary, message);
+                ImGui.PopTextWrapPos();
+                ImGui.EndTooltip();
+                ImGui.PopStyleColor();
+            }
         }
     }
 
@@ -2714,6 +2752,34 @@ public sealed class OceanMainWindow : Window, IDisposable
             lastIndex = m.Index + m.Length;
         }
         DrawPlain(text[lastIndex..]);
+    }
+
+    /// <summary>Bricht Text an Wortgrenzen auf maxWidth um (per CalcTextSize) - für die letzte Log-Zeile
+    /// (siehe DrawLogRow), die immer vollständig statt per TruncateToWidth gekürzt dargestellt wird.
+    /// Erwartet die passende Schrift bereits gepusht.</summary>
+    private static List<string> WrapTextToWidth(string text, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text))
+            return new List<string> { string.Empty };
+
+        var lines = new List<string>();
+        var current = string.Empty;
+        foreach (var word in text.Split(' '))
+        {
+            var candidate = current.Length == 0 ? word : $"{current} {word}";
+            if (current.Length > 0 && ImGui.CalcTextSize(candidate).X > maxWidth)
+            {
+                lines.Add(current);
+                current = word;
+            }
+            else
+            {
+                current = candidate;
+            }
+        }
+
+        lines.Add(current);
+        return lines;
     }
 
     /// <summary>Kürzt per CalcTextSize auf maxWidth und hängt "…" an, falls nötig - erwartet die passende Schrift bereits gepusht.</summary>

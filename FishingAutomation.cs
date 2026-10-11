@@ -1577,16 +1577,15 @@ public sealed class FishingAutomation : IDisposable, ISpecialRouteHost
         if (now - lastActionAt < FaceSettleDelay)
             return;
 
-        // Nutzer-Report: AutoHook startete bereits bei "Prep Time" (targetFishStartUtc = Fenster minus
-        // FishAlertMinutes, siehe GetPlannedFish) - das ist nur der Zeitpunkt, bis zu dem man an der
-        // Angel-Position angekommen sein soll (daher auch der Name "Prep"), NICHT der tatsächliche
-        // Fensterbeginn. Entsprechend zeigte das Overlay schon "ANGELT"/State.Fishing, obwohl das
-        // Fenster noch Minuten entfernt war. Tatsächlich erst ab targetWindow.StartUtc losangeln.
-        if (now < targetWindow.StartUtc)
+        // Nutzeranforderung: der eingestellte Prep Timer (targetFishStartUtc = Fenster minus
+        // FishAlertMinutes, siehe GetPlannedFish) legt fest, WANN tatsächlich losgeangelt wird - z.B.
+        // bei 30 Minuten Prep Timer also schon 30 Minuten BEVOR das Fenster öffnet, nicht erst beim
+        // tatsächlichen Fensterbeginn (targetWindow.StartUtc).
+        if (now < targetFishStartUtc)
         {
             StatusText = Loc.T(
-                $"An der Angel-Position von {FishName(target!)} - Angeln startet in {FormatSpan(targetWindow.StartUtc - now)}",
-                $"At the fishing position of {FishName(target!)} - fishing starts in {FormatSpan(targetWindow.StartUtc - now)}");
+                $"An der Angel-Position von {FishName(target!)} - Angeln startet in {FormatSpan(targetFishStartUtc - now)}",
+                $"At the fishing position of {FishName(target!)} - fishing starts in {FormatSpan(targetFishStartUtc - now)}");
             return;
         }
 
